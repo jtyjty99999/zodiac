@@ -1,0 +1,456 @@
+{
+  "slug": "codex",
+  "repo": "https://github.com/openai/codex",
+  "analyzedAt": "2026-11-19",
+  "features": {
+    "agent-loop.streaming": {
+      "status": "yes",
+      "notes": "通过 Responses 流式接口接收事件，session/turn.rs 把增量文本、推理与工具调用实时转发给 TUI、exec 与 app-server，界面边接收边渲染。",
+      "evidence": "codex-rs/core/src/session/turn.rs\ncodex-rs/codex-api/src/common.rs\ncodex-rs/codex-api/src/sse/mod.rs\ncodex-rs/tui/src/lib.rs"
+    },
+    "agent-loop.tool-call-loop": {
+      "status": "yes",
+      "notes": "回合内循环采样模型、分派工具并把结果回灌，支持并行执行与取消；ToolOrchestrator 统一处理审批与沙箱，直到模型不再请求工具或触发压缩。",
+      "evidence": "codex-rs/core/src/session/turn.rs\ncodex-rs/core/src/tools/router.rs\ncodex-rs/core/src/tools/parallel.rs\ncodex-rs/core/src/tools/orchestrator.rs",
+      "detailMd": "Codex 的回合由 task 层驱动：RegularTask::run 建立 TurnContext 并调用 run_turn（core/src/session/turn.rs），后者循环向模型发起 Responses 流式请求，解析 ResponseEvent，并将工具调用交给 ToolRouter 分派。工具执行经 ToolOrchestrator 统一完成审批与沙箱判定，再由 ToolCallRuntime（core/src/tools/parallel.rs）按调用并行度并发执行，支持 CancellationToken 中断；结果以 FunctionCallOutput 追加进历史并再次采样，直到模型不再请求工具。工具清单由 spec_plan.rs 依据模型、审批模式与实验开关注册，规划工具、MCP、code mode 等均在此汇总。循环还会在回合边界排空输入队列实现转向，并在上下文超限时转入压缩后继续。",
+      "detailEvidence": "codex-rs/core/src/tasks/regular.rs\ncodex-rs/core/src/session/turn.rs\ncodex-rs/core/src/tools/parallel.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+    },
+    "agent-loop.steering": {
+      "status": "yes",
+      "notes": "运行中通过 input_queue 与 thread_input 注入新消息，session/inject.rs 支持插话，回合边界排空队列；TUI 可排队或立即转向。",
+      "evidence": "codex-rs/core/src/session/input_queue.rs\ncodex-rs/core/src/thread_input.rs\ncodex-rs/core/src/session/inject.rs\ncodex-rs/core/src/session/turn.rs"
+    },
+    "agent-loop.plan-mode": {
+      "status": "yes",
+      "notes": "Plan 模式注册 update_plan 工具并约束为只读探索，计划项持久化并在 TUI 展示，可在执行模式间切换。",
+      "evidence": "codex-rs/core/src/tools/handlers/plan.rs\ncodex-rs/core/src/tools/handlers/plan_spec.rs\ncodex-rs/core/src/tools/spec_plan.rs\ncodex-rs/tui/src/slash_command.rs"
+    },
+    "agent-loop.loop-guard": {
+      "status": "partial",
+      "notes": "具备 token 预算、自动压缩、取消与超时机制，但未见显式最大轮次计数器或重复工具调用检测。",
+      "evidence": "codex-rs/core/src/session/token_budget.rs\ncodex-rs/core/src/session/context_window.rs\ncodex-rs/core/src/tools/parallel.rs"
+    },
+    "agent-loop.background-tasks": {
+      "status": "yes",
+      "notes": "unified_exec 支持后台终端与 write_stdin 取回输出，sleep/wait 工具可等待完成，子代理也可在后台运行。",
+      "evidence": "codex-rs/core/src/tools/handlers/unified_exec.rs\ncodex-rs/core/src/unified_exec/mod.rs\ncodex-rs/core/src/tools/handlers/sleep.rs"
+    },
+    "tools.file-read": {
+      "status": "partial",
+      "notes": "无专用 read_file 工具，模型通过 shell 的 cat/sed 读取文件，view_image 处理图片；exec-server 提供内部文件读取但未作为模型工具暴露。",
+      "evidence": "codex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/core/src/tools/handlers/view_image.rs\ncodex-rs/exec-server/src/lib.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+    },
+    "tools.file-edit": {
+      "status": "yes",
+      "notes": "以 apply_patch 为推荐编辑路径：流式解析 freeform 补丁，精确匹配上下文后原子写回，失败返回明确错误供模型重试，并生成 diff 供审批。",
+      "evidence": "codex-rs/core/src/tools/handlers/apply_patch.rs\ncodex-rs/apply-patch/src/lib.rs\ncodex-rs/apply-patch/src/file_update.rs\ncodex-rs/apply-patch/src/streaming_parser.rs",
+      "detailMd": "编辑能力以 apply_patch 为核心。模型输出 freeform 补丁文本，ApplyPatchHandler（core/src/tools/handlers/apply_patch.rs）调用 apply-patch crate 的流式解析器 streaming_parser.rs 增量解析，再由 parser.rs 生成 FileUpdate，file_update.rs 校验上下文精确匹配并原子写回。失败（上下文不匹配、文件缺失）会返回明确错误让模型重试；补丁在工具层被转换为统一 diff 供 TUI 展示并进入审批流程。相比逐行字符串替换，补丁格式一次可修改多文件、上下文更稳定，也便于审计与并发控制。shell 工具虽可写文件，但推荐路径仍是 apply_patch。",
+      "detailEvidence": "codex-rs/core/src/tools/handlers/apply_patch.rs\ncodex-rs/apply-patch/src/parser.rs\ncodex-rs/apply-patch/src/file_update.rs\ncodex-rs/apply-patch/src/streaming_parser.rs"
+    },
+    "tools.shell": {
+      "status": "yes",
+      "notes": "shell/unified_exec 执行终端命令，支持 PTY、超时、输出截断、后台会话与 write_stdin 续写。",
+      "evidence": "codex-rs/core/src/tools/handlers/shell_spec.rs\ncodex-rs/core/src/tools/handlers/unified_exec.rs\ncodex-rs/core/src/unified_exec/mod.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+    },
+    "tools.search": {
+      "status": "partial",
+      "notes": "无专用 grep/glob 工具，依赖 shell 中的 rg/grep 搜索；TUI 提供模糊文件查找，但工具清单未暴露结构化代码搜索。",
+      "evidence": "codex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/core/src/tools/spec_plan.rs\ncodex-rs/exec-server/src/lib.rs"
+    },
+    "tools.lsp": {
+      "status": "no",
+      "notes": "仓库内未见 LSP 客户端、诊断/定义/引用工具或语言服务器集成，代码理解依赖 shell 搜索与文件读取。",
+      "evidence": "codex-rs/core/src/tools/spec_plan.rs\ncodex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/Cargo.toml"
+    },
+    "tools.web": {
+      "status": "yes",
+      "notes": "内置 web_search 工具，支持搜索、打开页面与页内查找，可配置搜索后端与模式，并受网络策略约束。",
+      "evidence": "codex-rs/core/src/web_search.rs\ncodex-rs/core/src/tools/spec_plan.rs\ncodex-rs/config/src/config_toml.rs\ncodex-rs/network-proxy/src/lib.rs"
+    },
+    "tools.ask-user": {
+      "status": "partial",
+      "notes": "request_user_input 与异步变体存在，但受 experimental_request_user_input_enabled 与协作模式特性开关门控，仅在支持界面启用。",
+      "evidence": "codex-rs/core/src/tools/handlers/request_user_input.rs\ncodex-rs/core/src/tools/handlers/request_user_input_spec.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+    },
+    "tools.todo": {
+      "status": "yes",
+      "notes": "update_plan 工具维护任务清单，条目含状态并在 TUI 渲染进度，用于长任务的结构化跟踪。",
+      "evidence": "codex-rs/core/src/tools/handlers/plan.rs\ncodex-rs/core/src/tools/handlers/plan_spec.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+    },
+    "tools.code-mode": {
+      "status": "yes",
+      "notes": "code mode 让模型在 V8 沙箱中编写脚本组合调用工具，提供 exec/wait 工具减少往返；由 spec_plan 按 ToolMode 注册。",
+      "evidence": "codex-rs/core/src/tools/spec_plan.rs\ncodex-rs/core/src/tools/code_mode/execute_spec.rs\ncodex-rs/code-mode-runtime/src/service.rs\ncodex-rs/code-mode-runtime/src/lib.rs"
+    },
+    "tools.custom": {
+      "status": "yes",
+      "notes": "支持动态工具、扩展工具与 MCP 工具注册，插件可声明资源与 MCP 服务器，模型可通过 tool_search 发现可用工具。",
+      "evidence": "codex-rs/core/src/tools/handlers/dynamic.rs\ncodex-rs/core/src/tools/handlers/extension_tools.rs\ncodex-rs/core/src/tools/handlers/tool_search.rs\ncodex-rs/plugin/src/manifest.rs"
+    },
+    "tools.patch": {
+      "status": "yes",
+      "notes": "apply_patch 接受统一补丁格式，解析后批量原子应用并返回 diff，是推荐的跨文件批量修改方式。",
+      "evidence": "codex-rs/core/src/tools/handlers/apply_patch.rs\ncodex-rs/apply-patch/src/parser.rs\ncodex-rs/apply-patch/src/file_update.rs"
+    },
+    "permissions.approval-modes": {
+      "status": "yes",
+      "notes": "AskForApproval 提供 untrusted/on-request/granular/never，并有只读、自动编辑、全权限预设，可在 CLI 与 TUI 切换。",
+      "evidence": "codex-rs/protocol/src/protocol.rs\ncodex-rs/utils/approval-presets/src/lib.rs\ncodex-rs/tui/src/slash_command.rs\ncodex-rs/core/src/tools/approvals.rs"
+    },
+    "permissions.rule-engine": {
+      "status": "yes",
+      "notes": "Starlark execpolicy 规则对命令给出 allow/prompt/forbidden 决策，支持分层合并、前缀与正则匹配。",
+      "evidence": "codex-rs/execpolicy/src/policy.rs\ncodex-rs/execpolicy/src/decision.rs\ndocs/execpolicy.md"
+    },
+    "permissions.command-analysis": {
+      "status": "yes",
+      "notes": "shell-command 用 tree-sitter 解析管道、子命令与重定向，提取真实命令供规则引擎与沙箱判定，而非字符串前缀匹配。",
+      "evidence": "codex-rs/shell-command/src/parse_command.rs\ncodex-rs/core/src/safety.rs\ncodex-rs/execpolicy/src/policy.rs"
+    },
+    "permissions.outside-workspace": {
+      "status": "yes",
+      "notes": "沙箱按 cwd 与可写根限制文件访问，越界读写被 Seatbelt/bwrap/Landlock 拒绝，并可经审批申请提权重试。",
+      "evidence": "codex-rs/sandboxing/src/lib.rs\ncodex-rs/sandboxing/src/policy_transforms.rs\ncodex-rs/sandboxing/src/linux.rs\ncodex-rs/sandboxing/src/seatbelt.rs"
+    },
+    "permissions.sandbox": {
+      "status": "yes",
+      "notes": "跨平台 OS 级沙箱：macOS Seatbelt、Linux bubblewrap+seccomp+Landlock、Windows 受限令牌，统一由 SandboxManager 按策略生成。",
+      "evidence": "codex-rs/sandboxing/src/lib.rs\ncodex-rs/sandboxing/src/seatbelt.rs\ncodex-rs/linux-sandbox/src/lib.rs\ncodex-rs/windows-sandbox-rs/src/lib.rs",
+      "detailMd": "沙箱由 sandboxing crate 统一抽象：SandboxManager 依据 SandboxPolicy 生成平台策略。macOS 使用 seatbelt.rs 生成 SBPL 配置，限制文件写与网络；Linux 由 linux.rs 组装 bubblewrap 挂载命名空间，并在 linux-sandbox 中叠加 seccomp 过滤与 Landlock；Windows 使用 windows-sandbox-rs 的受限令牌或提权模式。policy_transforms.rs 将审批决策映射为沙箱参数，core/src/safety.rs 负责判定命令是否需要提权。网络侧由 network-proxy 提供受管代理与域名白名单。工具执行时 ToolOrchestrator 先沙箱运行，若因权限失败再按审批策略申请升级重试，实现默认安全与可用性的平衡。",
+      "detailEvidence": "codex-rs/sandboxing/src/lib.rs\ncodex-rs/sandboxing/src/seatbelt.rs\ncodex-rs/linux-sandbox/src/lib.rs\ncodex-rs/windows-sandbox-rs/src/lib.rs"
+    },
+    "permissions.network": {
+      "status": "yes",
+      "notes": "沙箱默认禁网，network-proxy 提供受管代理与域名白名单，审批后可放行特定网络请求。",
+      "evidence": "codex-rs/network-proxy/src/lib.rs\ncodex-rs/sandboxing/src/seatbelt.rs\ncodex-rs/sandboxing/src/linux.rs\ncodex-rs/sandboxing/src/lib.rs"
+    },
+    "permissions.persistence": {
+      "status": "yes",
+      "notes": "审批决定可在会话内缓存并复用（含预批准），减少重复确认，同时支持通过策略与请求工具调整或撤销。",
+      "evidence": "codex-rs/core/src/tools/approvals.rs\ncodex-rs/core/src/tools/handlers/request_permissions.rs\ncodex-rs/protocol/src/protocol.rs"
+    },
+    "context.system-prompt": {
+      "status": "yes",
+      "notes": "按模型与环境分层拼装提示：模型模板、工具说明、AGENTS.md、时间与环境提醒动态组合，静态前缀利于缓存。",
+      "evidence": "codex-rs/prompts/src/lib.rs\ncodex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/core/src/context/base_instructions.rs\ncodex-rs/core/src/session/turn_context.rs",
+      "detailMd": "系统提示按模型与环境分层拼装。prompts crate 以 include_str! 打包各模型模板（如 core/gpt-5.2-codex_prompt.md），prompts/src/lib.rs 负责选择基础模板并注入工具说明。core/src/context 下 base_instructions.rs、model_instructions.rs 处理模型覆盖，user_instructions.rs 注入 AGENTS.md，current_time_reminder.rs 追加时间与环境提醒。session/turn_context.rs 汇总 cwd、审批模式、sandbox 与模型能力并生成 TurnContext。提示由静态前缀加动态片段组成，以提升 prompt cache 命中；TUI、exec、app-server 共享同一构造路径，保证不同运行方式行为一致。",
+      "detailEvidence": "codex-rs/prompts/src/lib.rs\ncodex-rs/core/src/context/base_instructions.rs\ncodex-rs/core/src/context/model_instructions.rs\ncodex-rs/core/src/session/turn_context.rs"
+    },
+    "context.instructions": {
+      "status": "yes",
+      "notes": "加载 AGENTS.md 与 AGENTS.override.md 层级并注入，受 project_doc_max_bytes 限制，同时支持用户级指令文件。",
+      "evidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/core/src/context/user_instructions.rs\ndocs/agents_md.md\ncodex-rs/core/src/session/turn_context.rs"
+    },
+    "context.epochs": {
+      "status": "partial",
+      "notes": "以压缩边界重建上下文窗口并替换历史，但没有显式的 epoch 数据结构或跨纪元状态管理。",
+      "evidence": "codex-rs/core/src/compact.rs\ncodex-rs/core/src/session/context_window.rs\ncodex-rs/core/src/context_manager/history.rs"
+    },
+    "context.token-accounting": {
+      "status": "yes",
+      "notes": "按模型统计上下文 token 与剩余额度，驱动压缩阈值、get_context_remaining 工具与状态栏展示。",
+      "evidence": "codex-rs/core/src/session/context_window.rs\ncodex-rs/core/src/session/token_budget.rs\ncodex-rs/core/src/tools/handlers/get_context_remaining.rs"
+    },
+    "context.compaction": {
+      "status": "yes",
+      "notes": "接近上限时自动摘要历史：本地压缩与服务端远程压缩两条路径，保留目标与近期消息后重建上下文继续任务。",
+      "evidence": "codex-rs/core/src/compact.rs\ncodex-rs/core/src/compact_remote_v2.rs\ncodex-rs/core/src/session/turn.rs\ncodex-rs/prompts/templates/compact/prompt.md",
+      "detailMd": "压缩在 session/turn.rs 的回合循环中触发：context_window.rs 统计 token，低于阈值时由 token_budget 标记需要压缩。compact.rs 走本地摘要（调用 compact 模板要求模型输出摘要），compact_remote_v2.rs 则请求服务端压缩并替换历史；二者都保留用户目标、最近消息与关键工具结果。压缩前触发 PreCompact hook，压缩后触发 PostCompact，允许插件注入或改写摘要。压缩完成后重建上下文窗口并继续当前任务；若请求仍溢出，responses_retry.rs 负责裁剪与重试。压缩模型可单独配置，以控制成本与质量。",
+      "detailEvidence": "codex-rs/core/src/compact.rs\ncodex-rs/core/src/compact_remote_v2.rs\ncodex-rs/core/src/session/context_window.rs\ncodex-rs/prompts/templates/compact/prompt.md"
+    },
+    "context.compaction-hooks": {
+      "status": "yes",
+      "notes": "hooks 系统提供 PreCompact/PostCompact 事件，可在压缩前后执行自定义逻辑并注入或改写摘要。",
+      "evidence": "codex-rs/hooks/src/lib.rs\ncodex-rs/core/src/hook_runtime.rs\ncodex-rs/core/src/compact.rs"
+    },
+    "context.overflow-recovery": {
+      "status": "yes",
+      "notes": "请求超限时 responses_retry 裁剪历史并重试，必要时触发压缩或降级，避免回合直接失败。",
+      "evidence": "codex-rs/core/src/responses_retry.rs\ncodex-rs/core/src/compact.rs\ncodex-rs/core/src/session/context_window.rs"
+    },
+    "context.reminders": {
+      "status": "yes",
+      "notes": "在长任务中注入当前时间、计划状态与工具使用约束等动态提醒，并随上下文刷新。",
+      "evidence": "codex-rs/core/src/context/current_time_reminder.rs\ncodex-rs/core/src/context_manager/history.rs\ncodex-rs/core/gpt-5.2-codex_prompt.md"
+    },
+    "memory.project": {
+      "status": "yes",
+      "notes": "项目记忆以 AGENTS.md 层级为主：从 cwd 向上发现并合并 AGENTS.md/AGENTS.override.md，受大小限制后注入提示，另有自动记忆管线作为补充。",
+      "evidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/core/src/context/user_instructions.rs\ndocs/agents_md.md\ncodex-rs/memories/README.md",
+      "detailMd": "项目记忆主要通过 AGENTS.md 体系实现。core/src/agents_md.rs 从 cwd 向上逐级发现 AGENTS.md 与 AGENTS.override.md，受 project_doc_max_bytes 限制，合并后由 user_instructions.rs 注入系统提示；用户级 ~/.codex/AGENTS.md 也会加载。该机制无向量检索，靠分层文件与就近覆盖实现作用域，简单可预测。另有 memories 子系统做跨会话自动记忆：write 阶段从 rollout 提炼，read 阶段按需检索注入。项目知识因此分为显式指令文件与自动记忆两条路径，前者权威、后者补充。",
+      "detailEvidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/core/src/context/user_instructions.rs\ndocs/agents_md.md\ncodex-rs/memories/read/src/lib.rs"
+    },
+    "memory.user": {
+      "status": "yes",
+      "notes": "用户级 ~/.codex/AGENTS.md 与全局配置保存跨项目偏好，自动记忆亦按全局存储并检索。",
+      "evidence": "codex-rs/core/src/agents_md.rs\ndocs/agents_md.md\ncodex-rs/memories/read/src/lib.rs"
+    },
+    "memory.auto": {
+      "status": "yes",
+      "notes": "memories 写子系统两阶段从 rollout 提炼记忆，读子系统按需检索注入，支持去重、引用与工作区隔离。",
+      "evidence": "codex-rs/memories/write/src/phase1.rs\ncodex-rs/memories/write/src/phase2.rs\ncodex-rs/memories/read/src/lib.rs\ncodex-rs/memories/README.md"
+    },
+    "memory.scoped": {
+      "status": "yes",
+      "notes": "指令文件按目录就近覆盖，自动记忆按工作区分区存储并在读取时合并，形成路径级作用域与优先级。",
+      "evidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/memories/write/src/workspace.rs\ncodex-rs/memories/read/src/usage.rs"
+    },
+    "session.persistence": {
+      "status": "yes",
+      "notes": "会话以 JSONL rollout 落盘，SQLite state_db 保存索引与元数据，compression 压缩历史，thread-store 提供统一读写接口。",
+      "evidence": "codex-rs/rollout/src/lib.rs\ncodex-rs/rollout/src/state_db.rs\ncodex-rs/rollout/src/compression.rs\ncodex-rs/thread-store/src/store.rs",
+      "detailMd": "会话以 JSONL rollout 持久化。rollout/src/lib.rs 定义事件记录与恢复，recorder 追加写入 ~/.codex/sessions；state_db.rs 用 SQLite 保存会话索引、元数据与 rollout 引用，支持快速列出、搜索与迁移。compression.rs 对历史做压缩存储。thread-store 提供统一读写接口，供 TUI、exec、app-server 复用。恢复时按 id 读取 rollout 重建对话；分支通过复制前缀生成新 rollout；归档与删除由 cli/src/main.rs 的 Resume/Fork/Archive/Delete 子命令实现。写入带锁与反向扫描，兼顾并发安全与大文件读取效率。",
+      "detailEvidence": "codex-rs/rollout/src/lib.rs\ncodex-rs/rollout/src/state_db.rs\ncodex-rs/rollout/src/compression.rs\ncodex-rs/thread-store/src/store.rs"
+    },
+    "session.resume": {
+      "status": "yes",
+      "notes": "CLI resume 与 TUI 恢复命令可按 id 或上次会话载入历史继续对话。",
+      "evidence": "codex-rs/cli/src/main.rs\ncodex-rs/tui/src/slash_command.rs\ncodex-rs/rollout/src/lib.rs"
+    },
+    "session.branch": {
+      "status": "yes",
+      "notes": "fork 从历史复制前缀生成新 rollout，新旧分支独立演进，互不影响。",
+      "evidence": "codex-rs/cli/src/main.rs\ncodex-rs/rollout/src/lib.rs\ncodex-rs/thread-store/src/store.rs"
+    },
+    "session.rewind": {
+      "status": "partial",
+      "notes": "TUI 可回退对话到某条历史消息（backtrack），但不恢复工作区文件改动，缺少文件检查点快照。",
+      "evidence": "codex-rs/tui/src/app_backtrack.rs\ncodex-rs/tui/src/slash_command.rs"
+    },
+    "session.export": {
+      "status": "yes",
+      "notes": "支持将对话导出为 Markdown，便于分享与归档。",
+      "evidence": "codex-rs/tui/src/slash_command.rs\ncodex-rs/rollout/src/lib.rs\ncodex-rs/history/src/lib.rs"
+    },
+    "session.worktree": {
+      "status": "yes",
+      "notes": "提供 git worktree 隔离，可为任务或会话创建独立工作树，避免污染主工作区。",
+      "evidence": "codex-rs/worktree/src/lib.rs\ncodex-rs/cli/src/main.rs"
+    },
+    "session.retention": {
+      "status": "yes",
+      "notes": "rollout 维护与策略模块支持归档、删除、压缩与容量清理，CLI 提供 archive/unarchive/delete。",
+      "evidence": "codex-rs/rollout/src/maintenance.rs\ncodex-rs/rollout/src/policy.rs\ncodex-rs/cli/src/main.rs"
+    },
+    "models.providers": {
+      "status": "yes",
+      "notes": "统一 Provider 抽象接入 OpenAI、Bedrock、GCP Vertex、Ollama、LM Studio 等，并可在 config.toml 的 model_providers 扩展自定义端点。",
+      "evidence": "codex-rs/model-provider-info/src/lib.rs\ncodex-rs/model-provider/src/provider.rs\ncodex-rs/codex-api/src/provider.rs\ndocs/config.md",
+      "detailMd": "Provider 抽象位于 model-provider-info 与 codex-api。ModelProviderInfo 描述 base_url、wire_api、认证方式、重试与流超时；built_in_model_providers 内置 OpenAI、Amazon Bedrock、Bedrock Runtime、GCP Vertex、Ollama、LM Studio，用户可在 config.toml 的 model_providers 下扩展或覆盖受限字段。codex-api/provider.rs 与 auth.rs 负责构造带认证头的 HTTP/WS 客户端，统一走 Responses 协议；sse 模块解析流式事件。models-manager 从目录接口或缓存获取模型能力与定价，login crate 处理 OAuth 与设备码。内置 Provider 不允许随意改写身份与鉴权，确保托管策略可控。",
+      "detailEvidence": "codex-rs/model-provider-info/src/lib.rs\ncodex-rs/model-provider/src/provider.rs\ncodex-rs/codex-api/src/provider.rs\ncodex-rs/models-manager/src/catalog.rs"
+    },
+    "models.catalog": {
+      "status": "yes",
+      "notes": "models-manager 维护模型目录与缓存，包含能力、上下文与定价元数据，并支持自定义模型覆盖。",
+      "evidence": "codex-rs/models-manager/src/catalog.rs\ncodex-rs/models-manager/src/manager.rs\ncodex-rs/model-provider-info/src/capabilities.rs"
+    },
+    "models.auth": {
+      "status": "yes",
+      "notes": "支持 ChatGPT OAuth、API Key、设备码登录以及 Bedrock/GCP 云凭证，凭证按 Provider 注入请求。",
+      "evidence": "codex-rs/login/src/lib.rs\ncodex-rs/model-provider/src/auth.rs\ndocs/authentication.md"
+    },
+    "models.roles": {
+      "status": "yes",
+      "notes": "可分别配置主模型、review_model、default_subagent_model 与压缩模型，按用途分工。",
+      "evidence": "codex-rs/config/src/config_toml.rs\ncodex-rs/core/src/agent/role.rs\ncodex-rs/core/src/compact.rs"
+    },
+    "models.caching": {
+      "status": "yes",
+      "notes": "请求携带 prompt_cache_key 与缓存 TTL 选项，利用服务端缓存降低长上下文重复计费与延迟。",
+      "evidence": "codex-rs/codex-api/src/common.rs\ncodex-rs/core/src/session/turn_context.rs"
+    },
+    "models.multimodal": {
+      "status": "yes",
+      "notes": "图片经 image_preparation 编码后作为多模态内容发送，支持本地图片与截图输入。",
+      "evidence": "codex-rs/core/src/image_preparation.rs\ncodex-rs/core/src/tools/handlers/view_image.rs\ncodex-rs/codex-api/src/common.rs"
+    },
+    "models.retry": {
+      "status": "yes",
+      "notes": "对限流与网络错误做退避重试，流空闲超时与最大重试可配置，并支持降级与错误映射。",
+      "evidence": "codex-rs/model-provider-info/src/lib.rs\ncodex-rs/core/src/responses_retry.rs\ncodex-rs/codex-api/src/common.rs"
+    },
+    "interface.tui": {
+      "status": "yes",
+      "notes": "基于 ratatui 的交互式终端界面，含流式对话、工具卡片、Markdown/Diff 渲染、slash 命令与运行中转向。",
+      "evidence": "codex-rs/tui/src/lib.rs\ncodex-rs/tui/src/app.rs\ncodex-rs/tui/src/bottom_pane/mod.rs\ncodex-rs/tui/src/markdown_render.rs",
+      "detailMd": "TUI 基于 ratatui，入口 tui/src/lib.rs 建立 App 与事件循环，chatwidget 负责对话渲染、流式增量与工具卡片，bottom_pane 处理输入与补全，markdown_render 与 diff_render 负责富文本和补丁展示。app.rs 处理按键、slash 命令（slash_command.rs）与运行中转向；keymap.rs 支持自定义键位，theme_picker.rs 加载 .tmTheme 主题。状态栏由 statusline_provider.rs 聚合模型、token 与 git 信息。TUI 通过 app-server 或 core 事件流获取状态，与 headless 模式共享同一回合语义，避免行为分叉。",
+      "detailEvidence": "codex-rs/tui/src/lib.rs\ncodex-rs/tui/src/app.rs\ncodex-rs/tui/src/bottom_pane/mod.rs\ncodex-rs/tui/src/diff_render.rs"
+    },
+    "interface.vscode": {
+      "status": "partial",
+      "notes": "仓库内无 VS Code 扩展源码；通过 app-server 协议与 /ide 上下文支持 IDE 集成，官方扩展在外部仓库维护。",
+      "evidence": "codex-rs/tui/src/chatwidget/ide_context.rs\ncodex-rs/app-server-protocol/src/lib.rs\nsdk/typescript/src/index.ts"
+    },
+    "interface.jetbrains": {
+      "status": "no",
+      "notes": "未见 JetBrains 插件或相关适配代码，IDE 集成仅以 app-server 协议形式对外提供。",
+      "evidence": "codex-rs/app-server-protocol/src/lib.rs\ncodex-rs/Cargo.toml"
+    },
+    "interface.desktop": {
+      "status": "partial",
+      "notes": "CLI 可启动已安装的 Codex Desktop 应用，app-server 供其连接，但桌面客户端源码不在本仓库。",
+      "evidence": "codex-rs/cli/src/app_cmd.rs\ncodex-rs/app-server/src/lib.rs\ncodex-rs/app-server-daemon/src/lib.rs"
+    },
+    "interface.web": {
+      "status": "partial",
+      "notes": "仓库无 Web UI；cloud-tasks 提供访问云端任务的 CLI，浏览器界面由外部产品提供。",
+      "evidence": "codex-rs/cloud-tasks/src/lib.rs\ncodex-rs/cloud-tasks/src/cli.rs\ncodex-rs/backend-client/src/types.rs"
+    },
+    "interface.themes": {
+      "status": "yes",
+      "notes": "支持 .tmTheme 主题选择与自定义配色，keymap 可自定义快捷键绑定。",
+      "evidence": "codex-rs/tui/src/theme_picker.rs\ncodex-rs/tui/src/keymap.rs\ncodex-rs/tui/src/lib.rs"
+    },
+    "interface.diff-preview": {
+      "status": "yes",
+      "notes": "diff_render 以结构化 diff 展示文件改动，审批界面同时呈现待执行命令或补丁内容。",
+      "evidence": "codex-rs/tui/src/diff_render.rs\ncodex-rs/core/src/turn_diff_tracker.rs\ncodex-rs/tui/src/app.rs"
+    },
+    "interface.i18n": {
+      "status": "no",
+      "notes": "界面文案为英文硬编码，未见 i18n 框架、语言资源文件或语言切换配置。",
+      "evidence": "codex-rs/tui/src/lib.rs\ncodex-rs/Cargo.toml"
+    },
+    "run.headless": {
+      "status": "yes",
+      "notes": "codex exec 非交互执行并输出 JSON/JSONL 事件流，供脚本与流水线消费。",
+      "evidence": "codex-rs/exec/src/lib.rs\ncodex-rs/exec/src/event_processor_with_jsonl_output.rs\ndocs/exec.md"
+    },
+    "run.sdk": {
+      "status": "yes",
+      "notes": "提供 TypeScript 与 Python SDK，通过协议与 app-server 嵌入其他应用和自动化流程。",
+      "evidence": "sdk/typescript/src/index.ts\nsdk/python/README.md\ncodex-rs/app-server/src/lib.rs"
+    },
+    "run.daemon": {
+      "status": "yes",
+      "notes": "app-server-daemon 以常驻服务运行，管理生命周期、更新与多客户端连接。",
+      "evidence": "codex-rs/app-server-daemon/src/lib.rs\ncodex-rs/app-server/src/lib.rs"
+    },
+    "run.remote-protocol": {
+      "status": "yes",
+      "notes": "app-server-protocol 定义 JSON-RPC 协议，支持 stdio、WebSocket 与 UDS 等传输。",
+      "evidence": "codex-rs/app-server-protocol/src/lib.rs\ncodex-rs/app-server/src/lib.rs"
+    },
+    "ext.plugins": {
+      "status": "yes",
+      "notes": "插件清单声明 skills、MCP、apps 与 hooks，plugin-host 负责发现加载与生命周期，资源解析为受限定位符后注入。",
+      "evidence": "codex-rs/plugin/src/manifest.rs\ncodex-rs/plugin-host/src/lib.rs\ncodex-rs/core-plugins/src/marketplace.rs",
+      "detailMd": "插件系统由 plugin、core-plugins、plugin-host 组成。PluginManifest 声明名称、版本、skills、MCP 服务器、apps 与 hooks；plugin-host 负责发现、加载与生命周期，core-plugins/marketplace.rs 提供市场索引、安装与版本管理。插件资源在加载时被解析为受限定位符，hooks 以声明式配置注册到 hook_runtime，skills 按需注入。权限上插件不能绕过审批与沙箱，工具调用仍经 ToolOrchestrator。TUI 通过 list_available_plugins_to_install、request_plugin_install 等工具与 slash 命令完成安装，形成发现到启用的闭环。",
+      "detailEvidence": "codex-rs/plugin/src/manifest.rs\ncodex-rs/plugin-host/src/lib.rs\ncodex-rs/core-plugins/src/marketplace.rs\ncodex-rs/core/src/tools/handlers/request_plugin_install.rs"
+    },
+    "ext.marketplace": {
+      "status": "yes",
+      "notes": "core-plugins 提供市场索引、安装、版本管理与推荐，插件可携带技能、MCP 与 hooks。",
+      "evidence": "codex-rs/core-plugins/src/marketplace.rs\ncodex-rs/plugin/src/manifest.rs\ncodex-rs/core/src/tools/handlers/request_plugin_install.rs"
+    },
+    "ext.hooks": {
+      "status": "yes",
+      "notes": "hooks 系统定义 14 个生命周期事件（PreToolUse/PostToolUse/PreCompact/SessionStart 等），可执行自定义脚本或注入上下文。",
+      "evidence": "codex-rs/hooks/src/lib.rs\ncodex-rs/core/src/hook_runtime.rs"
+    },
+    "ext.skills": {
+      "status": "yes",
+      "notes": "skills 以说明文档加资源打包，按需加载并可随插件分发。",
+      "evidence": "codex-rs/skills/src/lib.rs\ndocs/skills.md\ncodex-rs/plugin/src/manifest.rs"
+    },
+    "ext.commands": {
+      "status": "partial",
+      "notes": "有内置 slash 命令与可复用 presets/skills，但未见用户以文件自定义 slash 命令并带参数的机制。",
+      "evidence": "codex-rs/tui/src/slash_command.rs\ndocs/slash_commands.md\ncodex-rs/skills/src/lib.rs"
+    },
+    "ext.plugin-ui": {
+      "status": "partial",
+      "notes": "插件可提供 statusline 与界面元数据，但没有任意面板或自定义渲染组件的 API。",
+      "evidence": "codex-rs/tui/src/statusline_provider.rs\ncodex-rs/plugin/src/manifest.rs\ncodex-rs/core-plugins/src/marketplace.rs"
+    },
+    "mcp.stdio": {
+      "status": "yes",
+      "notes": "rmcp 客户端以子进程 stdio 连接本地 MCP 服务器，完成握手与能力协商，工具/资源注册进工具清单。",
+      "evidence": "codex-rs/rmcp-client/src/stdio_server_launcher.rs\ncodex-rs/rmcp-client/src/local_stdio_transport.rs\ncodex-rs/config/src/mcp_types.rs\ncodex-rs/core/src/tools/handlers/mcp.rs",
+      "detailMd": "MCP 客户端基于 rmcp。config/src/mcp_types.rs 定义 Stdio 与 StreamableHttp 两种传输；stdio 场景由 stdio_server_launcher.rs 启动子进程，local_stdio_transport.rs 处理 JSON-RPC 帧、stderr 日志与进程退出。启动时完成 initialize 握手与能力协商，随后把 tools/resources 注册进工具清单（mcp_resource.rs、codex-mcp/resource_client.rs）。调用经 ToolRouter 与审批/沙箱流程，错误与超时按配置重试。stdio 服务器生命周期绑定会话，会话结束或插件卸载时终止进程，避免僵尸进程与凭证泄漏。",
+      "detailEvidence": "codex-rs/rmcp-client/src/stdio_server_launcher.rs\ncodex-rs/rmcp-client/src/local_stdio_transport.rs\ncodex-rs/config/src/mcp_types.rs\ncodex-rs/core/src/tools/handlers/mcp_resource.rs"
+    },
+    "mcp.remote": {
+      "status": "yes",
+      "notes": "支持 Streamable HTTP 远程 MCP，含重试、会话与传输管理。",
+      "evidence": "codex-rs/rmcp-client/src/streamable_http_retry.rs\ncodex-rs/config/src/mcp_types.rs\ncodex-rs/rmcp-client/src/local_stdio_transport.rs"
+    },
+    "mcp.oauth": {
+      "status": "yes",
+      "notes": "远程 MCP 支持 OAuth 授权、回调与令牌刷新，凭证可存于系统钥匙串。",
+      "evidence": "codex-rs/rmcp-client/src/oauth.rs\ncodex-rs/model-provider-info/src/oauth_session.rs\ncodex-rs/config/src/mcp_types.rs"
+    },
+    "mcp.resources": {
+      "status": "partial",
+      "notes": "支持 MCP resources 与通知/elicitation，但未见 MCP prompts 的原生集成与展示。",
+      "evidence": "codex-rs/codex-mcp/src/resource_client.rs\ncodex-rs/core/src/tools/handlers/mcp_resource.rs\ncodex-rs/core/src/tools/handlers/mcp.rs"
+    },
+    "agent.subagents": {
+      "status": "yes",
+      "notes": "子代理有独立线程与上下文，通过 spawn/send/wait/close 工具调用，可配置模型角色与工具集，结果回传主会话。",
+      "evidence": "codex-rs/core/src/agent/mod.rs\ncodex-rs/core/src/agent/control.rs\ncodex-rs/core/src/tools/handlers/multi_agents.rs\ncodex-rs/core/src/tools/handlers/multi_agents_v2.rs",
+      "detailMd": "子智能体由 core/src/agent 提供。agent/registry.rs 与 control.rs 管理子代理注册、状态与消息邮箱；spawn/wait/send/close 通过 multi_agents 工具暴露给主模型（tools/handlers/multi_agents.rs、multi_agents_v2.rs）。每个子代理有独立 thread 与上下文，可配置模型角色（role.rs、child_config.rs）与工具集，结果以消息回传主会话。agent/host 负责并发准入、用量统计与会话读取。子代理继承审批与沙箱策略，不能越权；主循环通过 mailbox 异步收取完成通知，实现并行子任务。",
+      "detailEvidence": "codex-rs/core/src/agent/control.rs\ncodex-rs/core/src/agent/registry.rs\ncodex-rs/core/src/tools/handlers/multi_agents.rs\ncodex-rs/core/src/agent/role.rs"
+    },
+    "agent.workflows": {
+      "status": "partial",
+      "notes": "提供子代理 spawn/send/wait 组合与消息板，可手工编排多步任务，但没有声明式工作流 DSL。",
+      "evidence": "codex-rs/core/src/agent/control.rs\ncodex-rs/core/src/tools/handlers/multi_agents.rs\ncodex-rs/core/src/agent/registry.rs"
+    },
+    "agent.background-notify": {
+      "status": "yes",
+      "notes": "后台子代理完成后经 mailbox 回传主会话，状态与结果在 TUI 汇总，主循环可异步取回。",
+      "evidence": "codex-rs/core/src/agent/control/mailbox.rs\ncodex-rs/core/src/agent/status.rs\ncodex-rs/core/src/tools/handlers/multi_agents_v2.rs"
+    },
+    "agent.cron": {
+      "status": "no",
+      "notes": "未见 cron、定时器或周期调度器实现，任务仅由用户或外部调用触发。",
+      "evidence": "codex-rs/cli/src/main.rs\ncodex-rs/app-server-daemon/src/lib.rs"
+    },
+    "agent.remote-control": {
+      "status": "yes",
+      "notes": "remote_control_cmd 支持远程配对与接管会话，复用 app-server 与 daemon 能力。",
+      "evidence": "codex-rs/cli/src/remote_control_cmd.rs\ncodex-rs/app-server/src/lib.rs\ncodex-rs/app-server-protocol/src/lib.rs"
+    },
+    "agent.ci": {
+      "status": "partial",
+      "notes": "headless exec 可用于 CI，仓库含 Codex bot 配置，但未见官方 GitHub Action 或 CI 集成包。",
+      "evidence": "codex-rs/exec/src/lib.rs\n.github/codex/home/config.toml\ndocs/exec.md"
+    },
+    "config.layered": {
+      "status": "yes",
+      "notes": "全局、项目、目录与 CLI 配置分层合并，profile 与 requirements 可覆盖，形成确定的优先级。",
+      "evidence": "codex-rs/config/src/lib.rs\ncodex-rs/config/src/config_requirements.rs\ndocs/config.md"
+    },
+    "config.hot-reload": {
+      "status": "partial",
+      "notes": "运行时可刷新云配置包并有文件监听，但 config.toml 变更不保证自动生效。",
+      "evidence": "codex-rs/core/src/session/config_refresh.rs\ncodex-rs/config/src/cloud_config_bundle.rs\ncodex-rs/file-watcher/src/lib.rs"
+    },
+    "config.managed": {
+      "status": "yes",
+      "notes": "托管 requirements/managed config 可由组织下发并强制策略覆盖，启动时校验。",
+      "evidence": "codex-rs/config/src/config_requirements.rs\ncodex-rs/config/src/cloud_config_bundle.rs\ndocs/config.md"
+    },
+    "obs.otel": {
+      "status": "yes",
+      "notes": "内置 OpenTelemetry 初始化与导出，可将链路与指标发送到配置的 OTLP 端点。",
+      "evidence": "codex-rs/otel/src/lib.rs\ncodex-rs/core/src/otel_init.rs"
+    },
+    "obs.usage": {
+      "status": "yes",
+      "notes": "统计并展示 token 消耗、上下文剩余与工具调用信息，状态栏和事件流均可读取。",
+      "evidence": "codex-rs/analytics/src/facts.rs\ncodex-rs/core/src/tools/handlers/get_context_remaining.rs\ncodex-rs/codex-api/src/common.rs"
+    },
+    "obs.eval": {
+      "status": "partial",
+      "notes": "有快照与场景回归测试套件保障行为，但缺少对外评测集或独立评测框架。",
+      "evidence": "codex-rs/core/tests/suite/snapshots/all__suite__compact__manual_compact_with_history_shapes.snap\ncodex-rs/core/tests/suite/apply_patch_cli.rs\ncodex-rs/core/tests/all.rs"
+    },
+    "config.enterprise-auth": {
+      "status": "partial",
+      "notes": "有 Enterprise 计划、托管策略与审计基础，但仓库内未见 SSO/SCIM 的具体实现。",
+      "evidence": "docs/authentication.md\ncodex-rs/config/src/config_requirements.rs\ncodex-rs/analytics/src/facts.rs"
+    }
+  }
+}

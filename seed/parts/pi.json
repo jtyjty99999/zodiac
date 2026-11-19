@@ -1,0 +1,456 @@
+{
+  "slug": "pi",
+  "repo": "https://github.com/earendil-works/pi",
+  "analyzedAt": "2026-11-19",
+  "features": {
+    "agent-loop.streaming": {
+      "status": "yes",
+      "notes": "模型响应以异步事件流逐段推送，agent-loop 转发 message_update 等增量事件，TUI、JSON 与 RPC 模式按事件实时渲染；thinking 与工具调用参数同样流式输出。",
+      "evidence": "packages/agent/src/agent-loop.ts\npackages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/ai/src/api/anthropic-messages.ts"
+    },
+    "agent-loop.tool-call-loop": {
+      "status": "yes",
+      "notes": "runLoop 以内层循环处理工具调用：校验参数、执行 beforeToolCall、顺序或并行运行工具、回灌结果后继续请求模型，直到无工具调用或收到 terminate。",
+      "evidence": "packages/agent/src/agent-loop.ts\npackages/agent/src/agent.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/types.ts",
+      "detailMd": "核心在 packages/agent/src/agent-loop.ts：runAgentLoop 负责外层回合，runLoop 维护内层工具循环。每轮把会话上下文转成 LLM 消息并调用 streamFn 流式产出 assistant 消息；若 stopReason 为 toolUse，则 prepareToolCall 先用 validateToolArguments 校验参数并调用 beforeToolCall，再按配置走 executeToolCallsSequential 或 executeToolCallsParallel（Promise.all 并发），随后 finalizeExecutedToolCall 执行 afterToolCall 生成 toolResult 回灌。\n\n循环在每次模型调用前轮询 steering 队列，工具结果全部回灌后检查 follow-up 队列；abortSignal 可中止流与工具。若 stopReason=length 导致工具参数被截断，failToolCallsFromTruncatedMessage 会把整批调用标记失败。工具可返回 terminate，shouldTerminateToolBatch 决定提前结束。Agent 类在 agent.ts 中封装队列、abort 与状态。",
+      "detailEvidence": "packages/agent/src/agent-loop.ts\npackages/agent/src/agent.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/types.ts"
+    },
+    "agent-loop.steering": {
+      "status": "yes",
+      "notes": "Agent 暴露 steer() 与 followUp() 两个队列，运行中可在工具批次前后插入消息；支持 one-at-a-time/all 两种投递模式，并可用 abort 清空队列。",
+      "evidence": "packages/agent/src/agent.ts\npackages/agent/src/agent-loop.ts\npackages/coding-agent/src/core/agent-session.ts"
+    },
+    "agent-loop.plan-mode": {
+      "status": "partial",
+      "notes": "核心不内置计划模式；官方示例扩展 plan-mode 通过禁用 edit/write、把 bash 限制为只读命令并解析 Plan: 步骤实现只读探索，需手动安装扩展。",
+      "evidence": "packages/coding-agent/examples/extensions/plan-mode/index.ts\npackages/coding-agent/examples/extensions/plan-mode/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "agent-loop.loop-guard": {
+      "status": "partial",
+      "notes": "提供 abort 信号与 stopReason=length 时整批工具调用失败保护，但没有最大轮次、成本/Token 预算或重复调用检测等可配置防护。",
+      "evidence": "packages/agent/src/agent-loop.ts\npackages/agent/src/agent.ts\npackages/coding-agent/src/core/settings-manager.ts"
+    },
+    "agent-loop.background-tasks": {
+      "status": "no",
+      "notes": "bash 工具同步执行并支持超时，无后台任务或持久 shell；README 与 usage 明确将 background bash 列为不内置功能，可由扩展自行实现。",
+      "evidence": "packages/coding-agent/src/core/tools/bash.ts\npackages/coding-agent/docs/usage.md\npackages/coding-agent/README.md"
+    },
+    "tools.file-read": {
+      "status": "yes",
+      "notes": "read 工具按 path/offset/limit 读取文本，检测图片 MIME 并以图像内容返回；超出字节/行数上限时截断并附提示。",
+      "evidence": "packages/coding-agent/src/core/tools/read.ts\npackages/coding-agent/src/core/tools/truncate.ts\npackages/coding-agent/src/core/tools/index.ts"
+    },
+    "tools.file-edit": {
+      "status": "yes",
+      "notes": "edit 工具一次性读取原文件，按 edits[].oldText/newText 顺序做唯一匹配替换，支持模糊归一化与按文件串行化；write 负责新建/覆盖。",
+      "evidence": "packages/coding-agent/src/core/tools/edit.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/src/core/tools/file-mutation-queue.ts\npackages/coding-agent/src/core/tools/write.ts",
+      "detailMd": "edit 工具定义于 core/tools/edit.ts，schema 为 {path, edits:[{oldText,newText}]}。它一次性读取原文件，在原始内容上按顺序应用所有 edits，要求 oldText 唯一匹配；edit-diff.ts 的 normalizeForFuzzyMatch 会对智能引号、破折号、空白与 NFKC 做归一化后再匹配，降低模型复制偏差。\n\n写回前通过 file-mutation-queue.ts 的 withFileMutationQueue 按文件路径串行化，避免并发工具互相覆盖，同时保持 BOM 与行尾。结果 details 含 firstChangedLine、diff 与 generateUnifiedPatch 生成的 patch，供 TUI 展示。write 工具负责新建/覆盖；read-before-edit 主要靠提示约束，并无强制拦截。",
+      "detailEvidence": "packages/coding-agent/src/core/tools/edit.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/src/core/tools/file-mutation-queue.ts\npackages/coding-agent/src/core/tools/write.ts"
+    },
+    "tools.shell": {
+      "status": "partial",
+      "notes": "bash 工具通过子进程执行命令，支持 timeout、流式输出累积与截断；没有持久 shell 会话或后台运行，每次调用相互独立。",
+      "evidence": "packages/coding-agent/src/core/tools/bash.ts\npackages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/docs/usage.md"
+    },
+    "tools.search": {
+      "status": "yes",
+      "notes": "grep 调用内置或自动下载的 ripgrep，find 按 glob 查找文件名，ls 列目录；结果均受输出截断保护。",
+      "evidence": "packages/coding-agent/src/core/tools/grep.ts\npackages/coding-agent/src/core/tools/find.ts\npackages/coding-agent/src/core/tools/ls.ts\npackages/coding-agent/src/utils/tools-manager.ts"
+    },
+    "tools.lsp": {
+      "status": "no",
+      "notes": "未提供 LSP 客户端，也没有诊断、定义、引用等结构化代码工具；仓库中无 language server 集成代码。",
+      "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "tools.web": {
+      "status": "no",
+      "notes": "无内置网页抓取或搜索工具；模型只能通过 bash（如 curl）访问网络，也没有可配置的搜索后端。",
+      "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "tools.ask-user": {
+      "status": "partial",
+      "notes": "核心工具集没有提问工具；示例扩展 question/qna 通过自定义 UI 实现结构化提问并等待回答，需用户安装。",
+      "evidence": "packages/coding-agent/examples/extensions/question.ts\npackages/coding-agent/examples/extensions/qna.ts\npackages/coding-agent/src/core/tools/index.ts"
+    },
+    "tools.todo": {
+      "status": "partial",
+      "notes": "核心不内置 todo 工具；示例扩展 todo.ts 提供 list/add/toggle/clear，并把任务状态保存在工具结果的 details 中。",
+      "evidence": "packages/coding-agent/examples/extensions/todo.ts\npackages/coding-agent/src/core/tools/index.ts"
+    },
+    "tools.code-mode": {
+      "status": "no",
+      "notes": "未实现让模型编写脚本组合调用工具的 Code Mode；工具只以独立的 function calling 形式暴露。",
+      "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "tools.custom": {
+      "status": "yes",
+      "notes": "扩展可通过 ExtensionAPI.registerTool 注册 TypeScript 工具，自定义 schema、执行逻辑与渲染，仓库含 dynamic-tools 等示例。",
+      "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/docs/extensions.md\npackages/coding-agent/examples/extensions/dynamic-tools.ts"
+    },
+    "tools.patch": {
+      "status": "no",
+      "notes": "没有 apply_patch 或统一 diff 输入工具；edit 仅在结果中生成 patch 供展示，不能按 patch 文本应用改动。",
+      "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/README.md"
+    },
+    "permissions.approval-modes": {
+      "status": "no",
+      "notes": "无只读、自动编辑、全自动等审批档位；仅有项目信任（trust.json、--approve）控制是否加载项目资源，不拦截工具调用。",
+      "evidence": "packages/coding-agent/docs/security.md\npackages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/src/cli/args.ts"
+    },
+    "permissions.rule-engine": {
+      "status": "no",
+      "notes": "无 allow/ask/deny 规则引擎或分层合并配置；示例 permission-gate 只用硬编码正则对 bash 弹确认，不属于核心能力。",
+      "evidence": "packages/coding-agent/examples/extensions/permission-gate.ts\npackages/coding-agent/examples/extensions/protected-paths.ts\npackages/coding-agent/docs/security.md"
+    },
+    "permissions.command-analysis": {
+      "status": "no",
+      "notes": "不解析 shell 命令结构；bash 直接交给 shell 执行，permission-gate 示例也只做正则匹配，无法识别管道、子命令或重定向。",
+      "evidence": "packages/coding-agent/src/core/tools/bash.ts\npackages/coding-agent/docs/security.md\npackages/coding-agent/examples/extensions/permission-gate.ts"
+    },
+    "permissions.outside-workspace": {
+      "status": "no",
+      "notes": "不检测或限制工作区外路径；read/write/edit/bash 以进程权限访问任意路径，安全文档明确这并非沙箱边界。",
+      "evidence": "packages/coding-agent/docs/security.md\npackages/coding-agent/src/core/tools/read.ts\npackages/coding-agent/src/core/tools/edit.ts"
+    },
+    "permissions.sandbox": {
+      "status": "partial",
+      "notes": "核心无内置沙箱；官方示例扩展 sandbox 基于 @anthropic-ai/sandbox-runtime 为 bash 提供 Seatbelt/bubblewrap 文件与网络限制，另有 gondolin 微 VM 示例。",
+      "evidence": "packages/coding-agent/examples/extensions/sandbox/index.ts\npackages/coding-agent/docs/containerization.md\npackages/coding-agent/examples/extensions/gondolin/index.ts\npackages/coding-agent/docs/security.md",
+      "detailMd": "Pi 核心明确不内置沙箱（docs/security.md 的 “No Built-in Sandbox”）；内置 read/write/edit/bash 以 pi 进程权限运行，项目信任只负责资源加载。官方 examples/extensions/sandbox 通过 @anthropic-ai/sandbox-runtime 为 bash 提供 OS 级隔离：macOS 用 sandbox-exec/Seatbelt，Linux 用 bubblewrap，并按 sandbox.json 的 filesystem.denyRead/allowWrite/denyWrite 与 network.allowedDomains/deniedDomains 生成策略。\n\n该扩展用 createBashTool 与自定义 BashOperations 覆盖内置 bash，全局与项目 sandbox.json 深度合并，提供 --no-sandbox 与 /sandbox 开关；其他工具不受保护。另一个 gondolin 示例把内置工具路由进微 VM。两者均为示例而非默认启用，因此整体只算部分支持。",
+      "detailEvidence": "packages/coding-agent/examples/extensions/sandbox/index.ts\npackages/coding-agent/docs/containerization.md\npackages/coding-agent/examples/extensions/gondolin/index.ts\npackages/coding-agent/docs/security.md"
+    },
+    "permissions.network": {
+      "status": "partial",
+      "notes": "核心无网络访问策略；sandbox 示例扩展可为受沙箱的 bash 配置 allowedDomains/deniedDomains，默认未启用。",
+      "evidence": "packages/coding-agent/examples/extensions/sandbox/index.ts\npackages/coding-agent/docs/containerization.md"
+    },
+    "permissions.persistence": {
+      "status": "no",
+      "notes": "不记忆工具审批决定；唯一持久化的是按目录保存的项目信任（trust.json），没有允许/拒绝的审批记忆或撤销机制。",
+      "evidence": "packages/coding-agent/docs/security.md\npackages/coding-agent/src/core/trust-manager.ts\npackages/coding-agent/src/core/settings-manager.ts"
+    },
+    "context.system-prompt": {
+      "status": "yes",
+      "notes": "buildSystemPrompt 按当前工具集、模型、模式拼装人设、工具 snippet/guidelines、技能 XML、项目上下文与 cwd，并支持 SYSTEM.md 与追加提示。",
+      "evidence": "packages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/harness/system-prompt.ts\npackages/coding-agent/docs/usage.md",
+      "detailMd": "系统提示由 coding-agent 的 core/system-prompt.ts 中 buildSystemPrompt 拼装：基础人设与工具列表、每个工具的 promptSnippets/promptGuidelines、技能 XML、cwd、项目上下文文件，以及可选的自定义/追加提示。agent-session.ts 的 _rebuildSystemPrompt 在工具集变化时收集各工具片段，并从 ResourceLoader 读取 SYSTEM.md、APPEND_SYSTEM.md、AGENTS 文件与 skills。\n\nharness 侧 packages/agent/src/harness/system-prompt.ts 提供 formatSkillsForSystemPrompt 等通用片段。提示在模型或工具变化时重建，扩展可通过 before_agent_start 或 context 事件修改。",
+      "detailEvidence": "packages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/harness/system-prompt.ts\npackages/coding-agent/docs/usage.md"
+    },
+    "context.instructions": {
+      "status": "yes",
+      "notes": "ResourceLoader 从全局 agent 目录、祖先目录与 cwd 依次加载 AGENTS.override.md、AGENTS.md、CLAUDE.md，并以 project_context 块注入系统提示。",
+      "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md"
+    },
+    "context.epochs": {
+      "status": "partial",
+      "notes": "以压缩条目为边界构建会话上下文，只保留最近压缩及其后条目；harness 的 compaction 还记录 retainedTail，但没有显式 epoch 命名或多纪元管理 API。",
+      "evidence": "packages/agent/src/harness/session/context.ts\npackages/agent/src/harness/session/types.ts\npackages/coding-agent/src/core/compaction/compaction.ts"
+    },
+    "context.token-accounting": {
+      "status": "yes",
+      "notes": "getContextUsage 按模型 contextWindow 估算 token 与百分比并在 footer 展示；usage-totals 汇总输入/输出/缓存 token 与费用。",
+      "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/src/modes/interactive/components/footer.ts\npackages/coding-agent/src/core/usage-totals.ts"
+    },
+    "context.compaction": {
+      "status": "yes",
+      "notes": "当估算上下文超过 window 减 reserveTokens 时触发压缩：按 keepRecentTokens 找切点、生成结构化摘要并写入 CompactionEntry，保留最近消息继续任务。",
+      "evidence": "packages/coding-agent/src/core/compaction/compaction.ts\npackages/agent/src/harness/compaction/compaction.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/compaction.md",
+      "detailMd": "压缩实现位于 core/compaction/compaction.ts 与 harness/compaction/compaction.ts。shouldCompact 在估算 contextTokens > contextWindow - reserveTokens（默认 16384）时触发；findCutPoint 以 keepRecentTokens（默认 20000）从尾部回退，必要时拆分 turn，保证保留最近的用户/助手交互。\n\nprepareCompaction 汇总待压缩条目，generateSummary 调用当前模型生成结构化摘要（Goal/Constraints/Progress/Decisions/Next Steps 等），compact 写入 CompactionEntry，记录 firstKeptEntryId 与 retainedTail。agent-session.ts 的 _runAutoCompaction 在回合前检查并执行；上下文重建时只保留最近压缩及其后条目。溢出时还会 compact-and-retry 一次。",
+      "detailEvidence": "packages/coding-agent/src/core/compaction/compaction.ts\npackages/agent/src/harness/compaction/compaction.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/compaction.md"
+    },
+    "context.compaction-hooks": {
+      "status": "yes",
+      "notes": "扩展可监听 session_before_compact 与 session_before_tree，返回自定义摘要或取消；示例 custom-compaction 演示替换压缩逻辑。",
+      "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/examples/extensions/custom-compaction.ts\npackages/coding-agent/docs/compaction.md"
+    },
+    "context.overflow-recovery": {
+      "status": "partial",
+      "notes": "识别 context overflow 后触发一次压缩并重试当前请求，失败则报错；没有多级裁剪或降级备用模型路径。",
+      "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/ai/src/utils/overflow.ts\npackages/coding-agent/src/core/compaction/compaction.ts"
+    },
+    "context.reminders": {
+      "status": "no",
+      "notes": "无运行时动态提醒注入；系统提示中的工具指南与 AGENTS 文件均为静态内容，长任务中不会追加计划或约束提醒。",
+      "evidence": "packages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md"
+    },
+    "memory.project": {
+      "status": "yes",
+      "notes": "项目记忆由 AGENTS.md/CLAUDE.md 指令文件实现，随仓库持久化并在每次会话注入系统提示；无自动写入或检索。",
+      "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md",
+      "detailMd": "项目记忆以 AGENTS.md/CLAUDE.md 指令文件实现。ResourceLoader.loadProjectContextFiles 先读 agentDir 下的全局文件，再从 cwd 向上收集祖先目录，候选顺序为 AGENTS.override.md、AGENTS.md、CLAUDE.md，去重后交给 buildSystemPrompt，以 <project_context><project_instructions path=...> 形式注入。\n\n这些文件跨会话持久存在于仓库中，可随版本控制共享；没有自动写入、检索或去重机制，模型不会自行更新记忆。项目信任不影响上下文文件加载（除非使用 --no-context-files 禁用）。",
+      "detailEvidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md"
+    },
+    "memory.user": {
+      "status": "partial",
+      "notes": "通过 ~/.pi/agent 下的全局 AGENTS.md 提供跨项目用户偏好，随系统提示加载；没有独立的用户记忆存储或写入工具。",
+      "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/settings.md"
+    },
+    "memory.auto": {
+      "status": "no",
+      "notes": "无模型自动提炼、写入、检索或去重记忆的机制；上下文仅来自指令文件、会话历史与压缩摘要。",
+      "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "memory.scoped": {
+      "status": "partial",
+      "notes": "指令文件按目录层级加载（cwd 与祖先目录），越近作用域越晚注入；没有按路径匹配的规则记忆或优先级合并配置。",
+      "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/docs/usage.md"
+    },
+    "session.persistence": {
+      "status": "yes",
+      "notes": "会话以 append-only JSONL 树持久化，每行含 id/parentId 的条目，支持版本迁移；另有 node:sqlite 后端与新的 harness 会话模型。",
+      "evidence": "packages/coding-agent/src/core/session-manager.ts\npackages/agent/src/harness/session/jsonl.ts\npackages/session-backends/sqlite-node/src/index.ts\npackages/coding-agent/docs/session-format.md",
+      "detailMd": "coding-agent 的 SessionManager 使用 append-only JSONL：每行一个 SessionEntry（message、model_change、compaction、branch_summary、label 等），通过 id/parentId 构成树，CURRENT_SESSION_VERSION=3 并提供 v1→v2 迁移。默认目录为 ~/.pi/agent/sessions/<cwd 编码>/，支持 --session、--continue、--no-session 与 --session-dir。\n\n新 harness 在 packages/agent/src/harness/session 下定义 lanes/records/operations，JSONL 存储由 jsonl.ts 与 jsonl/repo.ts 实现；packages/session-backends/sqlite-node 用 node:sqlite 提供另一后端。上下文重建时按叶子回溯父链并应用压缩边界。",
+      "detailEvidence": "packages/coding-agent/src/core/session-manager.ts\npackages/agent/src/harness/session/jsonl.ts\npackages/session-backends/sqlite-node/src/index.ts\npackages/coding-agent/docs/session-format.md"
+    },
+    "session.resume": {
+      "status": "yes",
+      "notes": "支持 --continue/-c 恢复上次会话、--session <id> 指定会话，交互式 session-selector 可搜索并切换历史会话。",
+      "evidence": "packages/coding-agent/src/cli/args.ts\npackages/coding-agent/src/main.ts\npackages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/src/modes/interactive/components/session-selector.ts"
+    },
+    "session.branch": {
+      "status": "yes",
+      "notes": "会话为 JSONL 树，/tree 在历史节点间切换并可从任意节点 fork/clone 新会话；分支继承父节点历史后独立追加。",
+      "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/src/modes/interactive/components/tree-selector.ts\npackages/coding-agent/docs/sessions.md"
+    },
+    "session.rewind": {
+      "status": "partial",
+      "notes": "可通过 /tree 回退对话叶子并生成分支摘要，但不回滚文件系统改动；git-checkpoint 示例用 git stash 提供工作区检查点。",
+      "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/examples/extensions/git-checkpoint.ts\npackages/coding-agent/docs/sessions.md"
+    },
+    "session.export": {
+      "status": "yes",
+      "notes": "/export 将当前会话导出为自包含 HTML（默认）或 .html/.jsonl 文件，便于分享与归档。",
+      "evidence": "packages/coding-agent/src/core/export-html/index.ts\npackages/coding-agent/src/core/slash-commands.ts\npackages/coding-agent/docs/usage.md"
+    },
+    "session.worktree": {
+      "status": "no",
+      "notes": "不为会话创建独立 git worktree；git-checkpoint 示例只做 stash 检查点，工作区隔离需用户自行处理。",
+      "evidence": "packages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/docs/sessions.md\npackages/coding-agent/examples/extensions/git-checkpoint.ts"
+    },
+    "session.retention": {
+      "status": "partial",
+      "notes": "无自动容量上限、归档或按时间清理策略；交互式会话选择器支持手动删除（移入回收站），其余需用户自行管理。",
+      "evidence": "packages/coding-agent/src/modes/interactive/components/session-selector.ts\npackages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/docs/sessions.md"
+    },
+    "models.providers": {
+      "status": "yes",
+      "notes": "Provider 抽象统一多家模型 API，pi-ai 内置数十家工厂与协议适配器，并允许自定义 provider 与兼容端点。",
+      "evidence": "packages/ai/src/models.ts\npackages/ai/src/providers/all.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/coding-agent/src/core/model-registry.ts",
+      "detailMd": "Provider 抽象在 packages/ai/src/models.ts：Provider 描述 id/name/baseUrl/headers/auth/getModels/stream，Models 负责注册、刷新与选择。packages/ai/src/providers/all.ts 组装数十家工厂（Anthropic、OpenAI、Google、Bedrock、Azure、Mistral、Groq、OpenRouter、DeepSeek、Kimi、xAI 等），各自映射到 api/ 下的协议适配器，如 anthropic-messages、openai-completions/responses、google-generative-ai、bedrock-converse-stream。\n\ncoding-agent 的 model-registry、model-runtime 与 provider-composer 在其上实现模型目录、OAuth/API Key 解析与自定义 provider；扩展也可调用 registerProvider 注入新 provider。",
+      "detailEvidence": "packages/ai/src/models.ts\npackages/ai/src/providers/all.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/coding-agent/src/core/model-registry.ts"
+    },
+    "models.catalog": {
+      "status": "yes",
+      "notes": "内置 models.generated.ts 模型清单，含上下文窗口、定价与能力；支持 models-store 刷新与 models.json 自定义模型。",
+      "evidence": "packages/ai/src/models.generated.ts\npackages/ai/src/model-catalog.ts\npackages/coding-agent/src/core/model-registry.ts\npackages/coding-agent/docs/models.md"
+    },
+    "models.auth": {
+      "status": "yes",
+      "notes": "支持 API Key、环境变量与 OAuth（PKCE/设备码）登录 Anthropic、GitHub Copilot、OpenAI Codex、Kimi、OpenRouter 等，凭据本地保存。",
+      "evidence": "packages/ai/src/auth/credential-store.ts\npackages/ai/src/auth/oauth/pkce.ts\npackages/ai/src/auth/oauth/device-code.ts\npackages/ai/src/providers/anthropic.ts"
+    },
+    "models.roles": {
+      "status": "partial",
+      "notes": "未提供主模型、压缩模型、子代理模型的分角色配置；压缩复用当前模型，示例 subagent 可按 agent 指定 --model。",
+      "evidence": "packages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/docs/models.md"
+    },
+    "models.caching": {
+      "status": "yes",
+      "notes": "Provider 层支持 Anthropic cache_control 与 OpenAI prompt cache，settings 提供 cacheRetention；cache-stats 分析缓存命中与浪费。",
+      "evidence": "packages/ai/src/types.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/ai/src/api/openai-prompt-cache.ts\npackages/coding-agent/src/core/cache-stats.ts"
+    },
+    "models.multimodal": {
+      "status": "yes",
+      "notes": "read 工具可读取图片并按 MIME 传给模型，Provider 适配层支持图像内容块；CLI 也支持粘贴剪贴板图片。",
+      "evidence": "packages/coding-agent/src/core/tools/read.ts\npackages/ai/src/types.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/coding-agent/src/utils/clipboard-image.ts"
+    },
+    "models.retry": {
+      "status": "partial",
+      "notes": "对限流、网络与 5xx 使用有界指数退避重试（maxRetries、baseDelayMs），但不切换到备用模型，也无模型级降级链。",
+      "evidence": "packages/ai/src/utils/provider-retry.ts\npackages/ai/src/utils/retry.ts\npackages/coding-agent/src/core/settings-manager.ts"
+    },
+    "interface.tui": {
+      "status": "yes",
+      "notes": "自研 TUI 采用组件化 render 与差量重绘，支持 overlay、滚动区、Kitty 键盘协议与 IME 光标；InteractiveMode 组合编辑器、Markdown 与流式消息。",
+      "evidence": "packages/tui/src/tui.ts\npackages/tui/src/index.ts\npackages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/coding-agent/docs/tui.md",
+      "detailMd": "TUI 在 packages/tui：Component 接口要求 render(width) 返回行数组，Tui 维护前后帧差异并只重绘变化行，支持 overlay/锚点、ScrollView、焦点与 CURSOR_MARKER 以兼容 IME 光标。输入层处理 Kitty keyboard protocol、按键释放与可配置 keybindings。\n\ncoding-agent 的 InteractiveMode 组合 Editor、Markdown、Loader、SelectList 等组件，把 agent 事件流映射为流式消息、工具块与 footer；主题由 dark/light JSON 与 theme-controller 管理，可热重载。",
+      "detailEvidence": "packages/tui/src/tui.ts\npackages/tui/src/index.ts\npackages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/coding-agent/docs/tui.md"
+    },
+    "interface.vscode": {
+      "status": "no",
+      "notes": "无官方 VS Code 扩展或 IDE 集成包；仅提供 CLI/TUI 与 SDK/RPC 供第三方封装。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackage.json"
+    },
+    "interface.jetbrains": {
+      "status": "no",
+      "notes": "无 JetBrains 插件或相关工程；IDE 集成需基于 RPC/SDK 自行实现。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackage.json"
+    },
+    "interface.desktop": {
+      "status": "no",
+      "notes": "无 Electron/Tauri 等桌面客户端；产品形态为终端 CLI。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackage.json"
+    },
+    "interface.web": {
+      "status": "no",
+      "notes": "无浏览器 Web 界面；server/client 包仅为实验性本地协议，不提供 Web UI。",
+      "evidence": "packages/coding-agent/README.md\npackages/server/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "interface.themes": {
+      "status": "yes",
+      "notes": "内置 dark/light JSON 主题与 51 个颜色 token，支持自定义主题热重载；keybindings.json 可重绑快捷键。",
+      "evidence": "packages/coding-agent/docs/themes.md\npackages/coding-agent/src/modes/interactive/theme/theme.ts\npackages/coding-agent/src/modes/interactive/theme/theme-controller.ts\npackages/coding-agent/docs/keybindings.md"
+    },
+    "interface.diff-preview": {
+      "status": "yes",
+      "notes": "edit 结果返回 diff 与 unified patch，TUI diff 组件按行及词级高亮展示改动；没有独立的审批式 diff 预览面板。",
+      "evidence": "packages/coding-agent/src/modes/interactive/components/diff.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/src/core/tools/edit.ts"
+    },
+    "interface.i18n": {
+      "status": "no",
+      "notes": "界面文案硬编码为英文，无 locale、翻译资源或语言切换配置。",
+      "evidence": "packages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "run.headless": {
+      "status": "yes",
+      "notes": "-p/--print 单次执行并输出文本，--mode json 输出 JSONL 事件流；非交互模式不弹信任提示，适合脚本消费。",
+      "evidence": "packages/coding-agent/src/modes/print-mode.ts\npackages/coding-agent/src/modes/json-event.ts\npackages/coding-agent/src/cli/args.ts\npackages/coding-agent/docs/json.md"
+    },
+    "run.sdk": {
+      "status": "yes",
+      "notes": "createAgentSession 导出可编程会话，支持自定义工具、事件订阅与持久化，文档见 docs/sdk.md。",
+      "evidence": "packages/coding-agent/src/core/sdk.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/sdk.md"
+    },
+    "run.daemon": {
+      "status": "partial",
+      "notes": "实验性 packages/server 提供 PiServer 与 unix socket 客户端，但未接入主 CLI，无守护进程管理与多客户端生产路径。",
+      "evidence": "packages/server/src/server.ts\npackages/server/README.md\npackages/coding-agent/src/cli/experimental/cli.ts\npackages/coding-agent/src/cli/experimental/commands/server.ts"
+    },
+    "run.remote-protocol": {
+      "status": "partial",
+      "notes": "RPC 模式以 JSONL 经 stdin/stdout 收发命令与事件，protocol 包定义 TypeBox schema；网络远程服务仍属实验性。",
+      "evidence": "packages/coding-agent/src/modes/rpc/rpc-mode.ts\npackages/coding-agent/docs/rpc.md\npackages/protocol/src/schemas.ts\npackages/coding-agent/src/modes/rpc/rpc-types.ts"
+    },
+    "ext.plugins": {
+      "status": "yes",
+      "notes": "扩展为 TypeScript 模块，jiti 加载，ExtensionRunner 分发事件；ExtensionAPI 提供工具、命令、快捷键、provider 与完整生命周期钩子，/reload 可重载。",
+      "evidence": "packages/coding-agent/src/core/extensions/loader.ts\npackages/coding-agent/src/core/extensions/runner.ts\npackages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/docs/extensions.md",
+      "detailMd": "扩展为 TypeScript 模块，loader.ts 用 jiti 直接加载（支持本地路径、npm/git 包与虚拟模块），并按项目信任决定是否加载项目扩展；runner.ts 的 ExtensionRunner 负责事件分发与 handler 排序。ExtensionAPI 提供 registerTool/registerCommand/registerShortcut/registerFlag/registerProvider 及 on(...) 事件订阅，覆盖 tool_call、session、message、turn 等生命周期。\n\n扩展与主进程同权限运行，没有运行时隔离；/reload 可重新加载扩展。示例目录含 sandbox、subagent、plan-mode、custom-compaction 等大量能力，体现其扩展边界。",
+      "detailEvidence": "packages/coding-agent/src/core/extensions/loader.ts\npackages/coding-agent/src/core/extensions/runner.ts\npackages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/docs/extensions.md"
+    },
+    "ext.marketplace": {
+      "status": "partial",
+      "notes": "通过 pi install 从 npm/git/本地安装扩展包，支持 list/update/remove 与清单；无集中式市场、评分或推荐。",
+      "evidence": "packages/coding-agent/src/core/package-manager.ts\npackages/coding-agent/docs/packages.md\npackages/coding-agent/src/core/pi-manifest.ts"
+    },
+    "ext.hooks": {
+      "status": "yes",
+      "notes": "扩展可订阅 tool_call、tool_result、session_*、message_*、turn_* 等事件，在前后执行自定义逻辑并可阻断或改写输入。",
+      "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/src/core/extensions/runner.ts\npackages/coding-agent/docs/extensions.md"
+    },
+    "ext.skills": {
+      "status": "yes",
+      "notes": "从 .pi/skills、~/.pi/agent/skills 等加载含 SKILL.md 的技能包，按名称/描述生成 available_skills 注入系统提示，按需读取。",
+      "evidence": "packages/coding-agent/src/core/skills.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/harness/system-prompt.ts\npackages/coding-agent/docs/skills.md"
+    },
+    "ext.commands": {
+      "status": "yes",
+      "notes": "支持 Markdown 提示模板（.pi/prompts）与扩展 registerCommand 注册斜杠命令，模板可含参数占位。",
+      "evidence": "packages/coding-agent/src/core/prompt-templates.ts\npackages/coding-agent/src/core/slash-commands.ts\npackages/coding-agent/docs/prompt-templates.md"
+    },
+    "ext.plugin-ui": {
+      "status": "yes",
+      "notes": "扩展 UI 上下文可注入 widget、status/footer、overlay、自定义消息与工具渲染组件，并可替换编辑器。",
+      "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/examples/extensions/custom-footer.ts\npackages/coding-agent/examples/extensions/message-renderer.ts\npackages/coding-agent/docs/extensions.md"
+    },
+    "mcp.stdio": {
+      "status": "no",
+      "notes": "未实现 MCP 客户端，仓库无 @modelcontextprotocol/sdk 依赖或 stdio 传输代码；README 明确标注 No MCP。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md",
+      "detailMd": "Pi 没有 MCP 客户端：仓库无 @modelcontextprotocol/sdk 依赖，也没有 stdio/HTTP 传输、服务器配置或资源层代码；README 与 docs/usage.md 明确列出 “No MCP”，将其归为扩展领域。\n\n因此无法直接连接本地 MCP server。理论上可用扩展的 registerTool 与 tool_call 钩子自行实现桥接（启动子进程、转发 JSON-RPC），但官方未提供 stdio 实现或服务器配置格式，示例目录也没有 MCP 桥接，故判定为不支持。",
+      "detailEvidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md"
+    },
+    "mcp.remote": {
+      "status": "no",
+      "notes": "无 HTTP/SSE/Streamable HTTP MCP 传输实现；与 stdio 一样整体缺失。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md"
+    },
+    "mcp.oauth": {
+      "status": "no",
+      "notes": "无 MCP OAuth 授权或令牌刷新流程；现有 OAuth 仅用于模型 Provider 登录。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/ai/src/auth/oauth/pkce.ts"
+    },
+    "mcp.resources": {
+      "status": "no",
+      "notes": "未实现 MCP resources、prompts、通知等能力；工具生态完全依赖内置工具与扩展。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md"
+    },
+    "agent.subagents": {
+      "status": "partial",
+      "notes": "核心无子代理 API；官方 subagent 示例扩展派生独立 pi 进程（--mode json -p --no-session），支持 single/parallel/chain 并汇总文本结果。",
+      "evidence": "packages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/examples/extensions/subagent/agents.ts\npackages/coding-agent/examples/extensions/subagent/README.md\npackages/coding-agent/docs/usage.md",
+      "detailMd": "核心无子代理 API；官方示例 examples/extensions/subagent 注册 subagent 工具，支持 single、parallel（最多 8 任务、并发 4）与 chain（用 {previous} 串联）三种模式。它从 .pi/agents 与 ~/.pi/agent/agents 的 Markdown frontmatter 读取 name/description/tools/model，并把任务写入临时提示文件。\n\n执行时 spawn 新的 pi 进程：--mode json -p --no-session，并可带 --model、--thinking、--tools、--append-system-prompt，父会话只接收最终文本结果，从而实现独立上下文。该能力需手动安装扩展，故为部分支持。",
+      "detailEvidence": "packages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/examples/extensions/subagent/agents.ts\npackages/coding-agent/examples/extensions/subagent/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "agent.workflows": {
+      "status": "partial",
+      "notes": "无声明式工作流引擎；示例 subagent 扩展提供 single/parallel/chain 三种编排，chain 用 {previous} 串联上一步结果。",
+      "evidence": "packages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/examples/extensions/subagent/README.md\npackages/coding-agent/docs/usage.md"
+    },
+    "agent.background-notify": {
+      "status": "no",
+      "notes": "无后台代理或任务完成通知机制；所有工具调用都在当前轮次内同步完成。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/src/core/tools/bash.ts"
+    },
+    "agent.cron": {
+      "status": "no",
+      "notes": "无内置 cron 或定时触发；扩展可在进程内自行调度，但没有官方任务调度器或持久定时器。",
+      "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/extensions.md\npackages/coding-agent/src/core/agent-session.ts"
+    },
+    "agent.remote-control": {
+      "status": "no",
+      "notes": "无手机或其他设备远程接管能力；实验性 server/client 仅支持本地 unix socket。",
+      "evidence": "packages/server/README.md\npackages/coding-agent/src/modes/rpc/rpc-mode.ts\npackages/coding-agent/docs/rpc.md"
+    },
+    "agent.ci": {
+      "status": "partial",
+      "notes": "无官方 GitHub Action 或 CI 集成；可通过 -p/--mode json 在 CI 调用，evals 包提供模型行为回归测试。",
+      "evidence": "packages/coding-agent/docs/json.md\npackages/evals/src/pi-harness.ts\npackages/evals/src/smoke.eval.ts\npackages/coding-agent/src/modes/print-mode.ts"
+    },
+    "config.layered": {
+      "status": "yes",
+      "notes": "SettingsManager 合并全局 ~/.pi/agent/settings.json 与项目 .pi/settings.json，CLI 参数与环境变量再覆盖，项目配置受信任门控。",
+      "evidence": "packages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/docs/settings.md\npackages/coding-agent/src/cli/args.ts"
+    },
+    "config.hot-reload": {
+      "status": "partial",
+      "notes": "支持 /reload 重新加载设置、资源与扩展并触发 session_start(reason=reload)，主题可热更新；无文件监听式自动重载。",
+      "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/docs/extensions.md"
+    },
+    "config.managed": {
+      "status": "no",
+      "notes": "无组织级托管配置、强制策略或下发通道；仅全局与项目两级用户配置。",
+      "evidence": "packages/coding-agent/docs/settings.md\npackages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/docs/security.md"
+    },
+    "obs.otel": {
+      "status": "partial",
+      "notes": "telemetry 包定义 vendor-neutral TelemetryContext/Span 与内存实现，不含 exporter；应用需自行接 OpenTelemetry、Sentry 等后端。",
+      "evidence": "packages/telemetry/src/index.ts\npackages/telemetry/README.md\npackages/telemetry/src/memory.ts"
+    },
+    "obs.usage": {
+      "status": "yes",
+      "notes": "usage-totals 汇总各模型 token 与费用，cache-stats 统计缓存命中与浪费，footer 实时显示上下文占用与花费。",
+      "evidence": "packages/coding-agent/src/core/usage-totals.ts\npackages/coding-agent/src/core/cache-stats.ts\npackages/coding-agent/src/modes/interactive/components/footer.ts"
+    },
+    "obs.eval": {
+      "status": "partial",
+      "notes": "packages/evals 基于 vitest-evals 提供模型驱动的行为评测（smoke、extensions），不是完整官方基准集。",
+      "evidence": "packages/evals/src/pi-harness.ts\npackages/evals/src/smoke.eval.ts\npackages/evals/src/extensions.eval.ts\npackages/evals/README.md"
+    },
+    "config.enterprise-auth": {
+      "status": "no",
+      "notes": "无 SSO、SCIM、审计等企业身份能力；鉴权仅为模型 Provider 的 API Key/OAuth。",
+      "evidence": "packages/coding-agent/docs/settings.md\npackages/coding-agent/docs/security.md\npackages/ai/src/auth/resolve.ts"
+    }
+  }
+}

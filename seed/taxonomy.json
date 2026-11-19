@@ -1,0 +1,777 @@
+{
+  "version": "2026-11-19",
+  "modules": [
+    {
+      "key": "agent-loop",
+      "name": "智能体循环",
+      "description": "模型与工具交替执行的运行时骨架：流式输出、工具循环、转向、计划模式与循环防护。",
+      "sortOrder": 1
+    },
+    {
+      "key": "builtin-tools",
+      "name": "内置工具",
+      "description": "harness 开箱即用的工具集合与编辑、搜索、代码执行策略。",
+      "sortOrder": 2
+    },
+    {
+      "key": "permissions",
+      "name": "权限与安全",
+      "description": "审批模式、规则引擎、命令结构分析、沙箱与网络边界。",
+      "sortOrder": 3
+    },
+    {
+      "key": "context",
+      "name": "上下文",
+      "description": "系统提示、指令文件、Token 统计、压缩与溢出恢复。",
+      "sortOrder": 4
+    },
+    {
+      "key": "memory",
+      "name": "记忆",
+      "description": "跨会话的项目/用户记忆，以及自动写入与作用域规则。",
+      "sortOrder": 5
+    },
+    {
+      "key": "session",
+      "name": "会话",
+      "description": "会话持久化、恢复、分支、回滚、导出与隔离工作区。",
+      "sortOrder": 6
+    },
+    {
+      "key": "models",
+      "name": "模型层",
+      "description": "Provider 抽象、模型目录、登录鉴权、角色分工与重试。",
+      "sortOrder": 7
+    },
+    {
+      "key": "interface",
+      "name": "界面",
+      "description": "TUI、IDE 扩展、桌面/Web 客户端、主题与 Diff 展示。",
+      "sortOrder": 8
+    },
+    {
+      "key": "run-modes",
+      "name": "运行方式",
+      "description": "Headless、SDK、常驻服务与远程协议等集成形态。",
+      "sortOrder": 9
+    },
+    {
+      "key": "extensions",
+      "name": "扩展生态",
+      "description": "插件、市场、Hooks、Skills、自定义命令与插件 UI。",
+      "sortOrder": 10
+    },
+    {
+      "key": "mcp",
+      "name": "MCP",
+      "description": "Model Context Protocol 的传输、鉴权与资源/提示集成。",
+      "sortOrder": 11
+    },
+    {
+      "key": "multi-agent",
+      "name": "多智能体与自动化",
+      "description": "子智能体、工作流、后台任务、定时与 CI 集成。",
+      "sortOrder": 12
+    },
+    {
+      "key": "config",
+      "name": "配置与可观测",
+      "description": "分层配置、热加载、托管配置、遥测、用量与评测。",
+      "sortOrder": 13
+    }
+  ],
+  "features": [
+    {
+      "key": "agent-loop.streaming",
+      "module": "agent-loop",
+      "name": "流式响应循环",
+      "description": "模型输出以流式事件驱动 UI 与状态更新。",
+      "tags": ["runtime", "streaming"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent-loop.tool-call-loop",
+      "module": "agent-loop",
+      "name": "工具调用主循环",
+      "description": "模型请求工具、运行时执行并把结果回灌给模型的循环，含并发与中断。",
+      "tags": ["runtime", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "agent-loop.steering",
+      "module": "agent-loop",
+      "name": "运行中转向与排队",
+      "description": "智能体运行期间接受用户新指令、插话或排队消息。",
+      "tags": ["runtime", "ux"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent-loop.plan-mode",
+      "module": "agent-loop",
+      "name": "计划模式",
+      "description": "只读探索并产出实施计划的模式，与执行模式切换。",
+      "tags": ["runtime", "workflow"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent-loop.loop-guard",
+      "module": "agent-loop",
+      "name": "循环与预算防护",
+      "description": "最大轮次、成本/Token 预算、重复调用检测与中止机制。",
+      "tags": ["runtime", "safety"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent-loop.background-tasks",
+      "module": "agent-loop",
+      "name": "后台任务",
+      "description": "长命令或子任务转入后台运行，完成后可被主循环取回结果。",
+      "tags": ["runtime", "async"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "tools.file-read",
+      "module": "builtin-tools",
+      "name": "文件读取",
+      "description": "按行区间读取文件，支持图片/二进制识别与截断保护。",
+      "tags": ["tool", "files"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.file-edit",
+      "module": "builtin-tools",
+      "name": "写入与编辑",
+      "description": "创建/覆盖文件与基于精确匹配的局部编辑，含并发与读前校验。",
+      "tags": ["tool", "files", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "tools.shell",
+      "module": "builtin-tools",
+      "name": "Shell 执行",
+      "description": "执行终端命令，支持会话保持、超时、输出截断与后台运行。",
+      "tags": ["tool", "exec"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.search",
+      "module": "builtin-tools",
+      "name": "代码搜索",
+      "description": "grep/glob 风格的内容与文件名搜索，常内置 ripgrep。",
+      "tags": ["tool", "search"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.lsp",
+      "module": "builtin-tools",
+      "name": "LSP 集成",
+      "description": "接入语言服务器获取诊断、定义、引用等结构化代码信息。",
+      "tags": ["tool", "lsp"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.web",
+      "module": "builtin-tools",
+      "name": "Web 抓取与搜索",
+      "description": "内置网页抓取/搜索工具或可配置的搜索后端。",
+      "tags": ["tool", "web"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.ask-user",
+      "module": "builtin-tools",
+      "name": "向用户提问",
+      "description": "执行中向用户提出结构化问题并等待回答。",
+      "tags": ["tool", "ux"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.todo",
+      "module": "builtin-tools",
+      "name": "任务清单",
+      "description": "维护计划任务列表并向用户展示进度。",
+      "tags": ["tool", "planning"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.code-mode",
+      "module": "builtin-tools",
+      "name": "Code Mode",
+      "description": "让模型编写代码脚本组合调用工具，减少往返与上下文占用。",
+      "tags": ["tool", "advanced"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.custom",
+      "module": "builtin-tools",
+      "name": "自定义工具",
+      "description": "用户或插件注册新工具，扩展智能体能力边界。",
+      "tags": ["tool", "extensibility"],
+      "isDeepDive": false
+    },
+    {
+      "key": "tools.patch",
+      "module": "builtin-tools",
+      "name": "补丁应用",
+      "description": "以统一 diff / apply_patch 形式批量修改文件。",
+      "tags": ["tool", "files"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "permissions.approval-modes",
+      "module": "permissions",
+      "name": "审批模式",
+      "description": "只读、自动编辑、全自动等预设审批档位及切换方式。",
+      "tags": ["security", "ux"],
+      "isDeepDive": false
+    },
+    {
+      "key": "permissions.rule-engine",
+      "module": "permissions",
+      "name": "权限规则引擎",
+      "description": "按工具/命令/路径配置 allow、ask、deny 规则并可分层合并。",
+      "tags": ["security", "config"],
+      "isDeepDive": false
+    },
+    {
+      "key": "permissions.command-analysis",
+      "module": "permissions",
+      "name": "命令结构感知",
+      "description": "解析 shell 命令的真实结构（管道、子命令、重定向）而非字符串前缀匹配。",
+      "tags": ["security", "shell"],
+      "isDeepDive": false
+    },
+    {
+      "key": "permissions.outside-workspace",
+      "module": "permissions",
+      "name": "工作区外访问",
+      "description": "对项目根目录之外的读写进行检测、提示或拦截。",
+      "tags": ["security", "files"],
+      "isDeepDive": false
+    },
+    {
+      "key": "permissions.sandbox",
+      "module": "permissions",
+      "name": "OS 级沙箱",
+      "description": "借助 Seatbelt、Bubblewrap、Landlock 等内核机制限制文件与网络访问。",
+      "tags": ["security", "sandbox", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "permissions.network",
+      "module": "permissions",
+      "name": "网络访问策略",
+      "description": "对工具发起的网络请求做白名单、代理或完全隔离。",
+      "tags": ["security", "network"],
+      "isDeepDive": false
+    },
+    {
+      "key": "permissions.persistence",
+      "module": "permissions",
+      "name": "审批记忆",
+      "description": "记住用户的允许/拒绝决定，减少重复确认并支持撤销。",
+      "tags": ["security", "ux"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "context.system-prompt",
+      "module": "context",
+      "name": "系统提示",
+      "description": "按模型、模式与环境动态拼装的系统提示词与工具说明。",
+      "tags": ["context", "prompt", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "context.instructions",
+      "module": "context",
+      "name": "指令文件",
+      "description": "读取 AGENTS.md / CLAUDE.md 等项目与目录级说明并注入上下文。",
+      "tags": ["context", "files"],
+      "isDeepDive": false
+    },
+    {
+      "key": "context.epochs",
+      "module": "context",
+      "name": "上下文纪元",
+      "description": "以压缩边界划分上下文纪元，管理历史替换与重新注入。",
+      "tags": ["context", "advanced"],
+      "isDeepDive": false
+    },
+    {
+      "key": "context.token-accounting",
+      "module": "context",
+      "name": "Token 统计",
+      "description": "按模型统计上下文占用、剩余额度并驱动压缩阈值。",
+      "tags": ["context", "metrics"],
+      "isDeepDive": false
+    },
+    {
+      "key": "context.compaction",
+      "module": "context",
+      "name": "自动压缩",
+      "description": "上下文接近上限时自动摘要历史，保留关键信息继续任务。",
+      "tags": ["context", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "context.compaction-hooks",
+      "module": "context",
+      "name": "压缩钩子",
+      "description": "允许自定义压缩策略、预/后处理和注入摘要内容。",
+      "tags": ["context", "extensibility"],
+      "isDeepDive": false
+    },
+    {
+      "key": "context.overflow-recovery",
+      "module": "context",
+      "name": "溢出恢复",
+      "description": "请求超限后的重试、裁剪和降级路径。",
+      "tags": ["context", "resilience"],
+      "isDeepDive": false
+    },
+    {
+      "key": "context.reminders",
+      "module": "context",
+      "name": "运行时提醒",
+      "description": "在长任务中注入计划提醒、工具使用约束等动态提示。",
+      "tags": ["context", "prompt"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "memory.project",
+      "module": "memory",
+      "name": "项目记忆",
+      "description": "随项目保存、跨会话复用的知识文件与加载策略。",
+      "tags": ["memory", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "memory.user",
+      "module": "memory",
+      "name": "用户记忆",
+      "description": "跨项目的用户偏好与长期事实。",
+      "tags": ["memory", "user"],
+      "isDeepDive": false
+    },
+    {
+      "key": "memory.auto",
+      "module": "memory",
+      "name": "自动记忆",
+      "description": "由模型在对话中自动提炼并写入记忆，支持检索与去重。",
+      "tags": ["memory", "automation"],
+      "isDeepDive": false
+    },
+    {
+      "key": "memory.scoped",
+      "module": "memory",
+      "name": "记忆作用域",
+      "description": "按路径/目录生效的规则记忆与优先级合并。",
+      "tags": ["memory", "config"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "session.persistence",
+      "module": "session",
+      "name": "会话持久化",
+      "description": "会话事件与消息的落盘格式（JSONL、SQLite 等）、恢复与迁移。",
+      "tags": ["session", "storage", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "session.resume",
+      "module": "session",
+      "name": "恢复会话",
+      "description": "通过 id 或「继续上次」恢复历史会话。",
+      "tags": ["session", "ux"],
+      "isDeepDive": false
+    },
+    {
+      "key": "session.branch",
+      "module": "session",
+      "name": "会话分支",
+      "description": "从历史消息分叉出新的会话分支并独立演进。",
+      "tags": ["session", "advanced"],
+      "isDeepDive": false
+    },
+    {
+      "key": "session.rewind",
+      "module": "session",
+      "name": "回滚与撤销",
+      "description": "回退对话与工作区改动到某个检查点。",
+      "tags": ["session", "safety"],
+      "isDeepDive": false
+    },
+    {
+      "key": "session.export",
+      "module": "session",
+      "name": "会话导出",
+      "description": "导出 Markdown/JSON 等可分享或归档的会话记录。",
+      "tags": ["session", "ux"],
+      "isDeepDive": false
+    },
+    {
+      "key": "session.worktree",
+      "module": "session",
+      "name": "Worktree 隔离",
+      "description": "为会话或子任务创建独立 git worktree，避免污染主工作区。",
+      "tags": ["session", "git"],
+      "isDeepDive": false
+    },
+    {
+      "key": "session.retention",
+      "module": "session",
+      "name": "保留与清理",
+      "description": "会话历史容量上限、自动归档与清理策略。",
+      "tags": ["session", "storage"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "models.providers",
+      "module": "models",
+      "name": "多 Provider 接入",
+      "description": "统一抽象多家模型 API 与本地模型，含兼容协议适配。",
+      "tags": ["models", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "models.catalog",
+      "module": "models",
+      "name": "模型目录",
+      "description": "内置模型清单、能力与定价元数据，支持自定义模型配置。",
+      "tags": ["models", "config"],
+      "isDeepDive": false
+    },
+    {
+      "key": "models.auth",
+      "module": "models",
+      "name": "登录与鉴权",
+      "description": "OAuth、订阅账号或 API Key 的模型接入方式。",
+      "tags": ["models", "auth"],
+      "isDeepDive": false
+    },
+    {
+      "key": "models.roles",
+      "module": "models",
+      "name": "模型角色分工",
+      "description": "主模型、压缩模型、子代理模型等按用途分别配置。",
+      "tags": ["models", "config"],
+      "isDeepDive": false
+    },
+    {
+      "key": "models.caching",
+      "module": "models",
+      "name": "Prompt 缓存",
+      "description": "利用服务端缓存降低长上下文重复计费与延迟。",
+      "tags": ["models", "performance"],
+      "isDeepDive": false
+    },
+    {
+      "key": "models.multimodal",
+      "module": "models",
+      "name": "多模态输入",
+      "description": "支持图片、截图等非文本输入并传递给模型。",
+      "tags": ["models", "input"],
+      "isDeepDive": false
+    },
+    {
+      "key": "models.retry",
+      "module": "models",
+      "name": "重试与降级",
+      "description": "限流、网络错误、模型不可用时的重试、退避与备用模型。",
+      "tags": ["models", "resilience"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "interface.tui",
+      "module": "interface",
+      "name": "终端界面",
+      "description": "交互式 TUI 的渲染引擎、输入处理与流式展示。",
+      "tags": ["ui", "terminal", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "interface.vscode",
+      "module": "interface",
+      "name": "VS Code 扩展",
+      "description": "官方或一等公民的 VS Code 集成。",
+      "tags": ["ui", "ide"],
+      "isDeepDive": false
+    },
+    {
+      "key": "interface.jetbrains",
+      "module": "interface",
+      "name": "JetBrains 插件",
+      "description": "JetBrains 系列 IDE 的集成方式。",
+      "tags": ["ui", "ide"],
+      "isDeepDive": false
+    },
+    {
+      "key": "interface.desktop",
+      "module": "interface",
+      "name": "桌面应用",
+      "description": "独立桌面客户端（Electron/Tauri 等）。",
+      "tags": ["ui", "desktop"],
+      "isDeepDive": false
+    },
+    {
+      "key": "interface.web",
+      "module": "interface",
+      "name": "Web 界面",
+      "description": "浏览器中的会话与项目界面。",
+      "tags": ["ui", "web"],
+      "isDeepDive": false
+    },
+    {
+      "key": "interface.themes",
+      "module": "interface",
+      "name": "主题与键位",
+      "description": "主题切换、自定义配色与快捷键绑定。",
+      "tags": ["ui", "config"],
+      "isDeepDive": false
+    },
+    {
+      "key": "interface.diff-preview",
+      "module": "interface",
+      "name": "Diff 预览",
+      "description": "以结构化 diff/富文本展示文件改动与审批内容。",
+      "tags": ["ui", "files"],
+      "isDeepDive": false
+    },
+    {
+      "key": "interface.i18n",
+      "module": "interface",
+      "name": "国际化",
+      "description": "多语言界面与可配置语言。",
+      "tags": ["ui", "i18n"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "run.headless",
+      "module": "run-modes",
+      "name": "Headless/JSON 输出",
+      "description": "非交互执行并输出 JSON/JSONL 事件流供脚本消费。",
+      "tags": ["integration", "cli"],
+      "isDeepDive": false
+    },
+    {
+      "key": "run.sdk",
+      "module": "run-modes",
+      "name": "SDK",
+      "description": "以库的形式嵌入其他应用与自动化流水线。",
+      "tags": ["integration", "sdk"],
+      "isDeepDive": false
+    },
+    {
+      "key": "run.daemon",
+      "module": "run-modes",
+      "name": "常驻服务",
+      "description": "以服务/守护进程方式运行，供多客户端连接。",
+      "tags": ["integration", "server"],
+      "isDeepDive": false
+    },
+    {
+      "key": "run.remote-protocol",
+      "module": "run-modes",
+      "name": "远程协议",
+      "description": "定义 RPC/HTTP/WebSocket 协议供界面与远程客户端调用。",
+      "tags": ["integration", "protocol"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "ext.plugins",
+      "module": "extensions",
+      "name": "插件系统",
+      "description": "插件加载、生命周期、权限与运行时隔离。",
+      "tags": ["extensibility", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "ext.marketplace",
+      "module": "extensions",
+      "name": "插件市场",
+      "description": "插件的分发、安装、版本管理与推荐。",
+      "tags": ["extensibility", "distribution"],
+      "isDeepDive": false
+    },
+    {
+      "key": "ext.hooks",
+      "module": "extensions",
+      "name": "Hooks",
+      "description": "在工具调用、会话等事件前后执行自定义脚本。",
+      "tags": ["extensibility", "automation"],
+      "isDeepDive": false
+    },
+    {
+      "key": "ext.skills",
+      "module": "extensions",
+      "name": "Skills",
+      "description": "以说明文档+资源打包的可复用技能，按需加载。",
+      "tags": ["extensibility", "prompt"],
+      "isDeepDive": false
+    },
+    {
+      "key": "ext.commands",
+      "module": "extensions",
+      "name": "自定义命令",
+      "description": "用户定义斜杠命令/提示模板并支持参数。",
+      "tags": ["extensibility", "ux"],
+      "isDeepDive": false
+    },
+    {
+      "key": "ext.plugin-ui",
+      "module": "extensions",
+      "name": "插件 UI 扩展",
+      "description": "插件向 TUI/IDE 注入自定义渲染、面板或消息组件。",
+      "tags": ["extensibility", "ui"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "mcp.stdio",
+      "module": "mcp",
+      "name": "MCP stdio",
+      "description": "以子进程 stdio 方式连接本地 MCP 服务器。",
+      "tags": ["mcp", "protocol", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "mcp.remote",
+      "module": "mcp",
+      "name": "MCP 远程传输",
+      "description": "通过 HTTP/SSE/Streamable HTTP 连接远程 MCP 服务器。",
+      "tags": ["mcp", "protocol"],
+      "isDeepDive": false
+    },
+    {
+      "key": "mcp.oauth",
+      "module": "mcp",
+      "name": "MCP OAuth",
+      "description": "远程 MCP 的 OAuth 授权流程与令牌刷新。",
+      "tags": ["mcp", "auth"],
+      "isDeepDive": false
+    },
+    {
+      "key": "mcp.resources",
+      "module": "mcp",
+      "name": "MCP 资源与提示",
+      "description": "支持 MCP resources、prompts 与通知等非工具能力。",
+      "tags": ["mcp", "protocol"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "agent.subagents",
+      "module": "multi-agent",
+      "name": "子智能体",
+      "description": "派生独立上下文的子代理执行子任务并汇总结果。",
+      "tags": ["agents", "core"],
+      "isDeepDive": true
+    },
+    {
+      "key": "agent.workflows",
+      "module": "multi-agent",
+      "name": "工作流编排",
+      "description": "声明式或脚本化的多步骤/多代理编排能力。",
+      "tags": ["agents", "automation"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent.background-notify",
+      "module": "multi-agent",
+      "name": "后台任务通知",
+      "description": "后台代理/任务完成后通知主会话或用户。",
+      "tags": ["agents", "async"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent.cron",
+      "module": "multi-agent",
+      "name": "定时任务",
+      "description": "按 cron/间隔自动触发智能体任务。",
+      "tags": ["agents", "automation"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent.remote-control",
+      "module": "multi-agent",
+      "name": "远程控制",
+      "description": "从手机或其他设备远程接管/查看运行中的会话。",
+      "tags": ["agents", "remote"],
+      "isDeepDive": false
+    },
+    {
+      "key": "agent.ci",
+      "module": "multi-agent",
+      "name": "CI 集成",
+      "description": "在 CI 中运行智能体（修复、审查、评测）的官方路径。",
+      "tags": ["agents", "ci"],
+      "isDeepDive": false
+    },
+
+    {
+      "key": "config.layered",
+      "module": "config",
+      "name": "分层配置",
+      "description": "全局/项目/目录/会话多级配置合并与覆盖。",
+      "tags": ["config", "core"],
+      "isDeepDive": false
+    },
+    {
+      "key": "config.hot-reload",
+      "module": "config",
+      "name": "配置热加载",
+      "description": "运行中检测配置变更并即时生效。",
+      "tags": ["config", "runtime"],
+      "isDeepDive": false
+    },
+    {
+      "key": "config.managed",
+      "module": "config",
+      "name": "托管配置",
+      "description": "组织级下发的强制配置与策略覆盖。",
+      "tags": ["config", "enterprise"],
+      "isDeepDive": false
+    },
+    {
+      "key": "obs.otel",
+      "module": "config",
+      "name": "OpenTelemetry",
+      "description": "导出链路、指标与日志到可观测平台。",
+      "tags": ["observability", "enterprise"],
+      "isDeepDive": false
+    },
+    {
+      "key": "obs.usage",
+      "module": "config",
+      "name": "用量统计",
+      "description": "Token 消耗、费用与工具调用统计展示。",
+      "tags": ["observability", "metrics"],
+      "isDeepDive": false
+    },
+    {
+      "key": "obs.eval",
+      "module": "config",
+      "name": "评测与回归",
+      "description": "官方评测集/回归测试框架用于衡量智能体能力。",
+      "tags": ["observability", "quality"],
+      "isDeepDive": false
+    },
+    {
+      "key": "config.enterprise-auth",
+      "module": "config",
+      "name": "企业身份",
+      "description": "企业 SSO、SCIM、权限与审计等组织能力。",
+      "tags": ["config", "enterprise"],
+      "isDeepDive": false
+    }
+  ]
+}

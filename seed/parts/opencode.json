@@ -1,0 +1,456 @@
+{
+  "slug": "opencode",
+  "repo": "https://github.com/anomalyco/opencode",
+  "analyzedAt": "2026-11-19",
+  "features": {
+    "agent-loop.streaming": {
+      "status": "yes",
+      "notes": "模型响应经 @opencode-ai/llm 流式产出 text-delta、reasoning-delta、tool-input 等事件，SessionProcessor 边接收边写入消息 part 并驱动 UI。",
+      "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/llm.ts\npackages/opencode/src/session/llm/ai-sdk.ts"
+    },
+    "agent-loop.tool-call-loop": {
+      "status": "yes",
+      "notes": "prompt.ts 的 runLoop 根据 finish 与工具调用状态反复驱动模型；processor 负责 tool-call/tool-result 生命周期，tools.ts 桥接 AI SDK 工具执行与权限询问，支持并行工具调用与中断。",
+      "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/tools.ts",
+      "detailMd": "工具调用主循环分布在三个文件中。`SessionProcessor.create`（session/processor.ts）消费 LLM 流事件：tool-call 时通过 `ensureToolCall` 创建状态为 pending/running 的 ToolPart，tool-result 时 `completeToolCall` 写回 output、metadata 与 attachments，tool-error 时 `failToolCall`。真正的工具执行在 session/tools.ts，它把 Tool.Def 包装为 AI SDK tool，在 execute 前调用 `permission.ask`，执行后回写 part。上层 `runLoop`（session/prompt.ts）每轮把 MessageV2 转成模型消息并调用 `handle.process`，若 finish 为 tool-calls 或仍存在未完成工具调用则继续下一轮，直到模型给出终态。中断时 `Effect.onInterrupt` 与 cleanup 把未完成工具标记为 interrupted。循环防护包括 `DOOM_LOOP_THRESHOLD=3` 的重复调用检测、agent.steps 最大步数与 SessionRetry 退避重试。",
+      "detailEvidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/tools.ts\npackages/opencode/src/effect/runner.ts"
+    },
+    "agent-loop.steering": {
+      "status": "partial",
+      "notes": "运行中可再次提交消息，Runner.ensureRunning 会等待当前 run 结束再执行，TUI 以 QUEUED 标记排队消息；也支持取消中断，但没有真正注入当前流式的转向机制。",
+      "evidence": "packages/opencode/src/effect/runner.ts\npackages/opencode/src/session/run-state.ts\npackages/tui/src/routes/session/index.tsx"
+    },
+    "agent-loop.plan-mode": {
+      "status": "yes",
+      "notes": "内置 plan 主代理（禁用 edit、仅允许计划文件）与 build 代理，reminders 在模式切换时注入 plan/build 系统提示，plan_exit 工具负责确认切换；实验开关控制新版计划文件流程。",
+      "evidence": "packages/opencode/src/agent/agent.ts\npackages/opencode/src/session/reminders.ts\npackages/opencode/src/tool/plan.ts"
+    },
+    "agent-loop.loop-guard": {
+      "status": "yes",
+      "notes": "processor 检测最近 3 次同名同参工具调用并触发 doom_loop 权限询问；agent.steps 限制最大步数并注入 MAX_STEPS_PROMPT；SessionRetry 限制 5 次退避重试，支持取消中止。",
+      "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/retry.ts"
+    },
+    "agent-loop.background-tasks": {
+      "status": "yes",
+      "notes": "BackgroundJob 服务管理异步任务，task 工具 background=true 启动子代理后台运行并返回 job id，完成后可 promote/wait 取回结果；会话取消时一并取消后台任务。",
+      "evidence": "packages/opencode/src/background/job.ts\npackages/core/src/background-job.ts\npackages/opencode/src/tool/task.ts"
+    },
+    "tools.file-read": {
+      "status": "yes",
+      "notes": "read 工具按 offset/limit 行区间读取，默认 2000 行、单行与总字节截断，识别目录、图片与 PDF，并返回 loaded 文件列表供指令文件作用域判断。",
+      "evidence": "packages/opencode/src/tool/read.ts\npackages/opencode/src/session/instruction.ts"
+    },
+    "tools.file-edit": {
+      "status": "yes",
+      "notes": "edit 以 oldString/newString 精确匹配局部替换，配多层容错匹配器与唯一性校验，按文件加锁并保留 BOM/换行、格式化后回写 LSP 诊断；write 负责整文件写入，二者都经 edit 权限审批。",
+      "evidence": "packages/opencode/src/tool/edit.ts\npackages/opencode/src/tool/write.ts\npackages/opencode/src/tool/tool.ts",
+      "detailMd": "写入与编辑由 edit.ts 与 write.ts 实现。`EditTool` 接收 filePath/oldString/newString/replaceAll，先经 `assertExternalDirectoryEffect` 做工作区外检查，再调用 `ctx.ask({permission:'edit'})` 附带 diff 元数据审批。核心 `replace()` 依次尝试 Simple、LineTrimmed、BlockAnchor、WhitespaceNormalized、IndentationFlexible、EscapeNormalized、TrimmedBoundary、ContextAware、MultiOccurrence 等 Replacer，用 Levenshtein 相似度阈值处理缩进/空白差异，并拒绝匹配跨度远大于 oldString 的结果；oldString 必须唯一否则报错。每个文件通过 `Semaphore` 锁串行化，写入前读取原文件以保留 BOM 与 CRLF，写后调用 Format 与 LSP `touchFile`/`diagnostics` 并把错误回灌给模型。`WriteTool` 做整文件覆盖。实现不强制“先读后改”，依赖 oldString 精确匹配与权限审批；对部分 GPT 模型会改用 apply_patch 工具。",
+      "detailEvidence": "packages/opencode/src/tool/edit.ts\npackages/opencode/src/tool/write.ts\npackages/opencode/src/tool/apply_patch.ts\npackages/opencode/src/tool/external-directory.ts"
+    },
+    "tools.shell": {
+      "status": "partial",
+      "notes": "shell 工具用 bash/PowerShell 语法树解析命令，支持超时、输出截断落盘、权限与外部目录扫描、detached 子进程；但每条命令独立执行，没有持久 shell 会话，后台化主要依赖 task/后台任务。",
+      "evidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/arity.ts"
+    },
+    "tools.search": {
+      "status": "yes",
+      "notes": "grep 与 glob 工具基于内嵌 ripgrep 做内容正则搜索和文件名模式匹配，支持 include、路径限制、结果截断与外部目录权限检查。",
+      "evidence": "packages/opencode/src/tool/grep.ts\npackages/opencode/src/tool/glob.ts"
+    },
+    "tools.lsp": {
+      "status": "partial",
+      "notes": "LSP 服务持续为 edit/write 提供诊断；单独的 lsp 工具可做定义、引用、hover、符号、调用层级查询，但注册受 experimentalLspTool 开关控制，默认不暴露。",
+      "evidence": "packages/opencode/src/tool/lsp.ts\npackages/opencode/src/lsp/lsp.ts\npackages/opencode/src/lsp/diagnostic.ts"
+    },
+    "tools.web": {
+      "status": "yes",
+      "notes": "webfetch 抓取网页并转 markdown/text/html；websearch 通过 Exa 或 Parallel 后端搜索，仅在 opencode provider 或对应实验开关下启用。",
+      "evidence": "packages/opencode/src/tool/webfetch.ts\npackages/opencode/src/tool/websearch.ts"
+    },
+    "tools.ask-user": {
+      "status": "yes",
+      "notes": "question 工具向用户提出结构化多问题并等待回答（Question 服务），在 app/cli/desktop 客户端默认启用，结果回灌给模型继续执行。",
+      "evidence": "packages/opencode/src/tool/question.ts\npackages/opencode/src/question/index.ts"
+    },
+    "tools.todo": {
+      "status": "yes",
+      "notes": "todowrite 工具维护会话级任务清单，经 Todo 服务持久化并在 TUI 展示进度，是计划执行的默认工具。",
+      "evidence": "packages/opencode/src/tool/todo.ts\npackages/opencode/src/session/todo.ts"
+    },
+    "tools.code-mode": {
+      "status": "partial",
+      "notes": "实验性 `execute` 工具让模型编写脚本，在受限解释器中组合调用已连接的 MCP 工具以减少往返；仅当 experimentalCodeMode 开启且存在可见 MCP 工具时注册。",
+      "evidence": "packages/opencode/src/tool/code-mode.ts\npackages/codemode/src/interpreter/runtime.ts"
+    },
+    "tools.custom": {
+      "status": "yes",
+      "notes": "用户可在 .opencode/tool(s) 或全局配置目录放置 TS/JS 工具，也可由插件 tool 字段注册；ToolRegistry 动态导入并统一转成带 JSON Schema 的工具定义。",
+      "evidence": "packages/opencode/src/tool/registry.ts\npackages/web/src/content/docs/custom-tools.mdx"
+    },
+    "tools.patch": {
+      "status": "yes",
+      "notes": "apply_patch 工具解析 *** Begin Patch 形式的统一补丁并批量修改文件，生成 diff、触发格式化与 LSP 诊断；对 gpt 系列模型优先于 edit/write 暴露。",
+      "evidence": "packages/opencode/src/tool/apply_patch.ts\npackages/opencode/src/patch"
+    },
+    "permissions.approval-modes": {
+      "status": "yes",
+      "notes": "提供 allow/ask/deny 规则与 `--auto`（自动批准非 deny 请求）、`--yolo`/`--dangerously-skip-permissions` 等档位，TUI 可切换 auto-approve；plan 代理则以只读权限集实现只读模式。",
+      "evidence": "packages/opencode/src/cli/cmd/run.ts\npackages/opencode/src/agent/agent.ts\npackages/web/src/content/docs/permissions.mdx"
+    },
+    "permissions.rule-engine": {
+      "status": "yes",
+      "notes": "Permission.evaluate 按 permission/pattern 通配匹配，规则集由默认、agent、会话、用户配置逐层 merge，后匹配规则优先，支持 ask/allow/deny 与 ~/$HOME 展开。",
+      "evidence": "packages/opencode/src/permission/index.ts\npackages/opencode/src/agent/agent.ts"
+    },
+    "permissions.command-analysis": {
+      "status": "yes",
+      "notes": "shell 工具使用 bash 与 PowerShell 解析器构建命令语法树，识别重定向、命令分隔与子命令，再结合 arity 字典提取“人类可理解命令前缀”用于权限模式匹配，而非简单字符串前缀。",
+      "evidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/arity.ts"
+    },
+    "permissions.outside-workspace": {
+      "status": "yes",
+      "notes": "各文件/命令工具调用 assertExternalDirectoryEffect，命中工作区外路径时按 external_directory 规则 ask/allow/deny，默认询问并允许临时/技能等白名单目录。",
+      "evidence": "packages/opencode/src/tool/external-directory.ts\npackages/opencode/src/permission/index.ts\npackages/opencode/src/agent/agent.ts"
+    },
+    "permissions.sandbox": {
+      "status": "no",
+      "notes": "仓库未实现 Seatbelt、Bubblewrap、Landlock 等 OS 级沙箱；shell 工具经 CrossSpawn 直接启动子进程，仅靠权限规则与外部目录检查约束，codemode 的“受限解释器”也只是进程内脚本隔离。",
+      "evidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/index.ts\npackages/opencode/src/tool/external-directory.ts\npackages/codemode/src/interpreter/runtime.ts",
+      "detailMd": "该仓库没有 OS 级沙箱实现。`tool/shell.ts` 通过 `ChildProcess.make` 与 `CrossSpawnSpawner` 直接以当前用户身份启动 shell 子进程，仅设置 cwd、env、`TERM=dumb`、stdin ignore 与超时，没有 sandbox-exec/Seatbelt、bwrap/Bubblewrap、Landlock 或 seccomp 封装；`permission/index.ts` 只在逻辑层做 ruleset 求值与弹窗审批，`tool/external-directory.ts` 只对路径做工作区外提示，二者都不限制进程的实际文件/网络能力。codemode 包的 `interpreter/runtime.ts` 提供的是脚本能力收敛（只暴露编排与 MCP 调用），仍运行在同一进程，不是内核隔离。企业场景仅通过 MDM 托管配置与 provider 策略做组织约束。因此分类为 no：存在审批与边界提示，但缺少真正的内核级文件/网络沙箱。",
+      "detailEvidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/index.ts\npackages/opencode/src/tool/external-directory.ts\npackages/codemode/src/interpreter/runtime.ts"
+    },
+    "permissions.network": {
+      "status": "no",
+      "notes": "没有工具级网络白名单或隔离机制；仅支持 HTTPS_PROXY/HTTP_PROXY 等标准代理环境变量与自定义证书，webfetch 通过 webfetch 权限询问但不对目标域名做策略控制。",
+      "evidence": "packages/web/src/content/docs/network.mdx\npackages/opencode/src/tool/webfetch.ts\npackages/opencode/src/provider/provider.ts"
+    },
+    "permissions.persistence": {
+      "status": "partial",
+      "notes": "回复“always”会把规则加入当前实例内存中的 approved 列表并自动放行同会话后续匹配请求，但不会落盘跨重启保存，也没有集中查看/撤销的审批记忆管理。",
+      "evidence": "packages/opencode/src/permission/index.ts"
+    },
+    "context.system-prompt": {
+      "status": "yes",
+      "notes": "system.ts 按模型 api id 选择 anthropic/gpt/gemini/kimi 等专用提示词，动态注入模型 ID、工作目录、git 状态、日期、项目引用、技能清单与 MCP 说明；prompt.ts 负责最终拼装。",
+      "evidence": "packages/opencode/src/session/system.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/prompt/anthropic.txt",
+      "detailMd": "系统提示由 session/system.ts 与 session/prompt.ts 协作构建。`SystemPrompt.provider(model)` 依据 `model.api.id` 选择专属提示词模板（anthropic.txt、gpt.txt、codex.txt、gemini.txt、kimi.txt、beast.txt、meta.txt、trinity.txt、default.txt），例如 claude 走 Anthropic、gpt-4/o1/o3 走 beast。`environment()` 动态拼出模型名与 provider/model ID、工作目录、worktree 根、是否 git 仓库、平台、当天日期，并列出带 description 的项目 references。`skills(agent)` 按权限过滤后输出 verbose 技能清单，`mcp(agent)` 输出各 MCP server 的 instructions。runLoop 中把 env、instruction.system()（AGENTS.md 等）、mcp、skills 按序组成 system 数组，结构化输出时再追加专用提示。另有 agent.prompt、config.system 与插件 `experimental.chat.system.transform` 可覆盖。",
+      "detailEvidence": "packages/opencode/src/session/system.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/instruction.ts\npackages/opencode/src/session/prompt/default.txt"
+    },
+    "context.instructions": {
+      "status": "yes",
+      "notes": "Instruction 服务加载全局 ~/.config/opencode/AGENTS.md 与 ~/.claude/CLAUDE.md，以及首个匹配的项目 AGENTS.md/CLAUDE.md/CONTEXT.md，并支持 config.instructions 的 glob/URL；读取文件时还会向上附加最近目录说明。",
+      "evidence": "packages/opencode/src/session/instruction.ts\npackages/web/src/content/docs/rules.mdx"
+    },
+    "context.epochs": {
+      "status": "yes",
+      "notes": "core/session/context-epoch.ts 以基线快照与序号记录上下文纪元，压缩产生更高 seq 时替换基线并重新注入系统上下文快照，支持初始化阻塞与解码错误处理。",
+      "evidence": "packages/core/src/session/context-epoch.ts\npackages/core/src/session/sql.ts"
+    },
+    "context.token-accounting": {
+      "status": "yes",
+      "notes": "每个 step 通过 Session.getUsage 汇总 input/output/reasoning/cache 与费用写入消息，Token.estimate 估算历史体积，overflow.ts 依据模型 limit 与预留输出计算可用额度并驱动压缩。",
+      "evidence": "packages/opencode/src/session/overflow.ts\npackages/opencode/src/session/session.ts\npackages/opencode/src/util/token.ts"
+    },
+    "context.compaction": {
+      "status": "yes",
+      "notes": "compaction.ts 在溢出时按 turn 选择保留尾部预算、截断旧工具输出，调用 compaction 代理生成摘要型 assistant 消息并写入 compaction part，可自动续跑；prune 则主动清理旧工具结果释放上下文。",
+      "evidence": "packages/opencode/src/session/compaction.ts\npackages/opencode/src/session/overflow.ts\npackages/core/src/session/compaction.ts",
+      "detailMd": "自动压缩核心在 session/compaction.ts。`isOverflow` 委托 overflow.ts 的 `usable()`：以模型 context/input limit 减去预留输出（默认 min(20k, maxOutput)）得到可用额度，tokens 超过即溢出。`select()` 从最新 turn 向前按 `preserve_recent_tokens` 预算估算保留尾部，必要时 `splitTurn` 在同 turn 内切分；`prune()` 从后向前累计工具输出，超过 PRUNE_PROTECT 后把更老结果标记 compacted，仅在释放量超过 PRUNE_MINIMUM 时生效。`process()` 生成 compaction 专用的 summary assistant 消息，system 为空、tools 为空，用 core/buildPrompt 结合上一版摘要与序列化历史构造提示，插件可通过 `experimental.session.compacting` 注入 context 或替换 prompt。溢出错误路径会剥离媒体并重放最近用户消息，可选 `experimental.compaction.autocontinue` 自动续跑。processor 在 step-finish 时检测溢出并置 needsCompaction。",
+      "detailEvidence": "packages/opencode/src/session/compaction.ts\npackages/opencode/src/session/overflow.ts\npackages/core/src/session/compaction.ts\npackages/opencode/src/session/processor.ts"
+    },
+    "context.compaction-hooks": {
+      "status": "yes",
+      "notes": "压缩流程暴露 experimental.session.compacting（注入 context/替换 prompt）、experimental.chat.messages.transform 与 experimental.compaction.autocontinue 插件钩子，允许插件定制摘要输入与是否续跑。",
+      "evidence": "packages/opencode/src/session/compaction.ts\npackages/opencode/src/plugin/index.ts"
+    },
+    "context.overflow-recovery": {
+      "status": "yes",
+      "notes": "ContextOverflowError 时若未禁用 auto compaction 则进入压缩并重试，溢出场景会去除媒体附件、重放最后用户消息；另有请求级 SessionRetry 退避与工具输出 prune 作为降级路径。",
+      "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/overflow.ts\npackages/opencode/src/session/compaction.ts"
+    },
+    "context.reminders": {
+      "status": "yes",
+      "notes": "SessionReminders.apply 在构建消息时注入 plan 模式提示、plan→build 切换提示、计划文件位置说明等合成文本，实现长任务中的运行时提醒。",
+      "evidence": "packages/opencode/src/session/reminders.ts\npackages/opencode/src/session/prompt/plan-mode.txt"
+    },
+    "memory.project": {
+      "status": "partial",
+      "notes": "没有独立的项目记忆库；跨会话项目知识依赖 Instruction 服务加载的 AGENTS.md/CLAUDE.md/CONTEXT.md 并以 globUp 向上查找，注入系统提示，但无自动写入、去重或检索。",
+      "evidence": "packages/opencode/src/session/instruction.ts\npackages/web/src/content/docs/rules.mdx",
+      "detailMd": "OpenCode 没有像独立记忆存储那样的项目记忆系统，最接近的是 session/instruction.ts 的指令文件机制。`Instruction.systemPaths()` 先取全局 ~/.config/opencode/AGENTS.md 与 ~/.claude/CLAUDE.md（可用 disableClaudeCodePrompt 关闭），再在项目目录到 worktree 之间对 AGENTS.md、CLAUDE.md、已废弃的 CONTEXT.md 做 `findUp`，只取第一个命中的文件以避免逐级堆叠；config.instructions 还可追加相对 glob、绝对路径或远程 URL。`system()` 并行读取这些文件并按 “Instructions from: <path>” 注入系统提示。另有 `resolve()`：当模型读取某个文件时，从该文件目录向上寻找最近的 AGENTS.md，并用 per-message claims 集合保证每条消息只附加一次。它只读不写，模型无法自动提炼落盘，因此是“项目级持久知识”的有限实现，归类 partial。",
+      "detailEvidence": "packages/opencode/src/session/instruction.ts\npackages/opencode/src/session/prompt.ts\npackages/web/src/content/docs/rules.mdx"
+    },
+    "memory.user": {
+      "status": "partial",
+      "notes": "用户级长期信息仅通过全局 ~/.config/opencode/AGENTS.md 与 ~/.claude/CLAUDE.md 注入所有项目，属于静态指令文件，没有独立的用户偏好记忆或自动更新机制。",
+      "evidence": "packages/opencode/src/session/instruction.ts"
+    },
+    "memory.auto": {
+      "status": "no",
+      "notes": "未发现由模型在对话中自动提炼、写入、检索或去重的记忆机制；会话摘要/压缩只服务当前上下文，指令文件只能手工编辑。",
+      "evidence": "packages/opencode/src/session/instruction.ts\npackages/opencode/src/session/compaction.ts"
+    },
+    "memory.scoped": {
+      "status": "partial",
+      "notes": "指令文件具备路径作用域：项目根 AGENTS.md 全局生效，读取某文件时会向上附加最近的目录级 AGENTS.md；但这属于作用域规则加载，不是带优先级合并的独立记忆系统。",
+      "evidence": "packages/opencode/src/session/instruction.ts"
+    },
+    "session.persistence": {
+      "status": "yes",
+      "notes": "会话与消息/part 通过 Drizzle ORM 持久化到本地 SQLite（SessionTable/PartTable），支持迁移、分页查询、归档与删除级联；快照记录文件 patch，旧 JSON 存储仅作兼容。",
+      "evidence": "packages/opencode/src/session/session.ts\npackages/core/src/session/sql.ts\npackages/opencode/src/storage/storage.ts",
+      "detailMd": "会话持久化采用 SQLite + Drizzle ORM，而非早期 JSON 文件。core/session/sql.ts 定义 SessionTable 与 PartTable（含 parent_id、tokens、cost、revert、share_url、workspace_id、archived 等列），迁移脚本位于 core/src/database/migration。session/session.ts 的 `fromRow`/`toRow` 在 schema 与行之间映射，`get`/`list`/`messages` 用条件查询与游标分页（默认 limit 100），`updateMessage`/`updatePart` 做增量写入；删除时递归删除子会话并发布 Deleted 事件。消息内容以 part 形式存储，processor 通过 `updatePartDelta` 流式追加文本，减少整段重写。文件改动由 Snapshot 服务在 step 前后 track/patch 生成 FileDiff 并作为 patch part 落库，支撑回滚。SessionRevert 保存 revert 指针与快照。历史 JSON 存储（storage/storage.ts）保留给迁移与兼容读取，新路径统一走 SQLite。",
+      "detailEvidence": "packages/opencode/src/session/session.ts\npackages/core/src/session/sql.ts\npackages/opencode/src/snapshot/index.ts\npackages/opencode/src/storage/storage.ts"
+    },
+    "session.resume": {
+      "status": "yes",
+      "notes": "`opencode run --continue` 继续最近会话、`--session <id>` 恢复指定会话，attach 模式也支持 continue/session/fork；会话以 SQLite 记录可直接重载。",
+      "evidence": "packages/opencode/src/cli/cmd/run.ts\npackages/opencode/src/cli/cmd/attach.ts\npackages/opencode/src/session/session.ts"
+    },
+    "session.branch": {
+      "status": "yes",
+      "notes": "Session.fork 可按指定消息分叉出新会话并复制历史 part，标题自动追加 fork 序号；CLI/TUI 提供 --fork 与分叉对话框。",
+      "evidence": "packages/opencode/src/session/session.ts\npackages/tui/src/routes/session/dialog-fork-from-timeline.tsx"
+    },
+    "session.rewind": {
+      "status": "yes",
+      "notes": "SessionRevert 结合 Snapshot 把对话与工作区文件回退到某条消息/part 的检查点，并提供 unrevert 恢复；revert 状态持久化在会话行。",
+      "evidence": "packages/opencode/src/session/revert.ts\npackages/opencode/src/snapshot/index.ts"
+    },
+    "session.export": {
+      "status": "yes",
+      "notes": "`opencode export [sessionID]` 输出会话 JSON，可选 sanitize 脱敏文件内容、路径与 patch；此外 /share 提供在线分享链接。",
+      "evidence": "packages/opencode/src/cli/cmd/export.ts\npackages/web/src/content/docs/cli.mdx"
+    },
+    "session.worktree": {
+      "status": "yes",
+      "notes": "提供 git worktree 管理模块（创建/列出/移除、分支与 bootstrap），Web/桌面新建会话界面可选择或创建独立 worktree，实现会话隔离工作区。",
+      "evidence": "packages/opencode/src/worktree/index.ts\npackages/app/src/pages/new-session/new-session-workspace-controller.ts"
+    },
+    "session.retention": {
+      "status": "partial",
+      "notes": "支持会话归档/取消归档、删除级联、列表 limit 与游标分页，但没有按容量/时间自动归档或清理的保留策略配置。",
+      "evidence": "packages/opencode/src/session/session.ts\npackages/opencode/src/cli/cmd/session.ts"
+    },
+    "models.providers": {
+      "status": "yes",
+      "notes": "provider.ts 内置 @ai-sdk/*、OpenRouter、GitLab、Copilot、Venice 等 SDK 加载器，结合 models.dev 目录与用户自定义 npm/OpenAI-compatible provider，统一 getModel/getLanguage 并提供 provider 特有转换。",
+      "evidence": "packages/opencode/src/provider/provider.ts\npackages/opencode/src/provider/transform.ts",
+      "detailMd": "多 Provider 接入集中在 provider/provider.ts。文件内维护 BUNDLED 映射，把 Anthropic、OpenAI、Google/Vertex、Bedrock、OpenRouter、xAI、Mistral、Groq、Cerebras、Cohere、Alibaba、GitLab、Copilot、Venice 等 SDK 包映射到动态 import 与工厂函数，并支持本地模型走 OpenAI-compatible。provider 列表来自 models.dev 目录并合并用户 config.provider（可指定 npm、options、baseURL、models），`getModel` 解析模型元数据，`getLanguage` 惰性加载 SDK 语言模型。provider/transform.ts 负责按 provider 生成 providerOptions、cacheControl、thinking/reasoning 参数与最大输出 token。鉴权由 Auth 服务与 plugin/ 下的 OAuth 插件（Codex、Copilot、GitLab、Poe、Azure、Cloudflare、xAI 等）提供，模型状态与错误映射在 model-status.ts/error.ts。",
+      "detailEvidence": "packages/opencode/src/provider/provider.ts\npackages/opencode/src/provider/transform.ts\npackages/opencode/src/provider/auth.ts"
+    },
+    "models.catalog": {
+      "status": "yes",
+      "notes": "core/models-dev.ts 拉取并缓存 models.dev 目录，包含能力、上下文/输出 limit、价格与状态；用户可在 config 中自定义模型并合并覆盖。",
+      "evidence": "packages/core/src/models-dev.ts\npackages/opencode/src/provider/provider.ts"
+    },
+    "models.auth": {
+      "status": "yes",
+      "notes": "Auth 服务保存凭据，内置 Codex、GitHub Copilot、GitLab、Poe、Azure、Cloudflare、xAI 等 OAuth 插件与 API Key 登录流程，provider 配置可声明鉴权提示。",
+      "evidence": "packages/opencode/src/provider/auth.ts\npackages/opencode/src/plugin/openai/codex.ts\npackages/opencode/src/plugin/github-copilot/copilot.ts"
+    },
+    "models.roles": {
+      "status": "yes",
+      "notes": "内置隐藏的 compaction/title/summary 代理与 getSmallModel 小模型选择，子代理可在 agent 配置中单独指定 model；主/压缩/子代理用途可分别配置。",
+      "evidence": "packages/opencode/src/agent/agent.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/provider/provider.ts"
+    },
+    "models.caching": {
+      "status": "yes",
+      "notes": "ProviderTransform 为支持的服务端注入缓存标记（Anthropic cache_control、Gemini cachePoint、OpenAI/Copilot cache_control 等），并按模型能力自动附加到消息与系统提示。",
+      "evidence": "packages/opencode/src/provider/transform.ts"
+    },
+    "models.multimodal": {
+      "status": "yes",
+      "notes": "支持图片/PDF 输入：read 工具识别图片并返回 file part，Image 服务做尺寸/体积校验与缩放，消息转换把附件作为多模态内容发送给模型，MCP 资源也支持有限媒体类型。",
+      "evidence": "packages/opencode/src/image/image.ts\npackages/opencode/src/tool/read.ts\npackages/opencode/src/session/message-v2.ts"
+    },
+    "models.retry": {
+      "status": "yes",
+      "notes": "SessionRetry 对 429/5xx、限流、网络与超时错误做指数退避（初始 2s、最多 5 次），优先采用 Retry-After/retry-after-ms 响应头，并通过状态事件展示尝试信息。",
+      "evidence": "packages/opencode/src/session/retry.ts\npackages/opencode/src/provider/model-status.ts"
+    },
+    "interface.tui": {
+      "status": "yes",
+      "notes": "packages/tui 基于 SolidJS 与 @opentui/core 渲染终端界面，提供会话路由、提示输入、命令面板、主题、键位、diff 展示与插件插槽，通过 SDK 连接本地 HTTP 服务消费事件流。",
+      "evidence": "packages/tui/src/app.tsx\npackages/tui/src/routes/session/index.tsx\npackages/tui/src/component/prompt",
+      "detailMd": "TUI 位于 packages/tui，使用 SolidJS 响应式模型与 @opentui/core 的终端 renderable 体系自绘。`src/app.tsx` 组装路由、上下文与全局事件；`src/routes/session/index.tsx` 是会话主视图，订阅 SDK 事件（sync/event context）增量渲染 assistant 文本、reasoning、工具 part（含 QUEUED 状态）、todo 与权限弹窗。输入由 `component/prompt` 管理，支持多行编辑、@ 文件补全与斜杠命令；`keymap.tsx` 定义可配置键位，`theme/index.ts` 加载 30+ JSON 主题并支持自定义配色与 diff_style（stacked/unified）。`plugin/slots.tsx` 通过 @opentui/solid 的 slot registry 允许 TUI 插件注入自定义渲染。TUI 不直接运行 agent，而是连接 `opencode serve`/内嵌本地 server，经 @opencode-ai/sdk 调用 API 并消费 SSE/WebSocket 事件，因此可 attach 到远程实例。",
+      "detailEvidence": "packages/tui/src/app.tsx\npackages/tui/src/routes/session/index.tsx\npackages/tui/src/keymap.tsx\npackages/tui/src/plugin/slots.tsx"
+    },
+    "interface.vscode": {
+      "status": "yes",
+      "notes": "sdks/vscode 提供官方 VS Code 扩展，注册 open 终端与添加文件路径等命令，向集成终端发送 `opencode --port` 并复用已有终端，属于编辑器终端集成。",
+      "evidence": "sdks/vscode/src/extension.ts\nsdks/vscode/package.json"
+    },
+    "interface.jetbrains": {
+      "status": "no",
+      "notes": "仓库中没有 JetBrains/IntelliJ 专用插件工程；仅有通用 ACP 支持与 VS Code 扩展，JetBrains 只能通过支持 ACP 的第三方编辑器间接接入。",
+      "evidence": "packages/web/src/content/docs/acp.mdx\nsdks/vscode/src/extension.ts\npackages/web/src/content/docs/ide.mdx"
+    },
+    "interface.desktop": {
+      "status": "yes",
+      "notes": "packages/desktop 是 Electron 桌面应用，包含主进程窗口管理、sidecar 本地 server、IPC、自动更新、菜单与 WSL 支持，渲染层复用 app 界面。",
+      "evidence": "packages/desktop/src/main/index.ts\npackages/desktop/src/main/sidecar.ts"
+    },
+    "interface.web": {
+      "status": "yes",
+      "notes": "packages/app 是可在浏览器运行的 SolidStart 会话/项目界面，packages/web 为官网与文档站点，二者共享 UI 组件与主题。",
+      "evidence": "packages/app/src/app.tsx\npackages/web/src/content/docs/index.mdx"
+    },
+    "interface.themes": {
+      "status": "yes",
+      "notes": "内置 30+ 终端主题（catppuccin、dracula、gruvbox、tokyonight 等）并支持自定义主题 JSON 与 diff 样式；keymap.tsx 提供可配置快捷键绑定。",
+      "evidence": "packages/tui/src/theme/index.ts\npackages/tui/src/component/dialog-theme-list.tsx\npackages/tui/src/keymap.tsx"
+    },
+    "interface.diff-preview": {
+      "status": "yes",
+      "notes": "TUI 权限弹窗使用结构化 diff 组件按主题着色渲染增删行与行号，支持 stacked/unified 样式；edit/write 工具在审批元数据中附带生成的 diff。",
+      "evidence": "packages/tui/src/routes/session/permission.tsx\npackages/opencode/src/tool/edit.ts"
+    },
+    "interface.i18n": {
+      "status": "yes",
+      "notes": "Web/app 内置数十种语言包（packages/app/src/i18n），TUI 也有 Locale 工具处理本地化格式与语言选择，可切换界面语言。",
+      "evidence": "packages/app/src/i18n/en.ts\npackages/tui/src/util/locale.ts"
+    },
+    "run.headless": {
+      "status": "yes",
+      "notes": "`opencode run` 支持非交互执行与 `--format json` 输出原始事件流，另提供 --command、--file、--session、--fork 等脚本化参数，适合 CI/自动化消费。",
+      "evidence": "packages/opencode/src/cli/cmd/run.ts\npackages/web/src/content/docs/cli.mdx"
+    },
+    "run.sdk": {
+      "status": "yes",
+      "notes": "packages/sdk/js 提供生成的 TypeScript 客户端（含 v2 类型），SDK-next 与 @opencode-ai/plugin 便于以库形式嵌入或编写插件，openapi.json 描述 HTTP 契约。",
+      "evidence": "packages/sdk/js/src/index.ts\npackages/sdk/js/package.json\npackages/sdk/openapi.json"
+    },
+    "run.daemon": {
+      "status": "yes",
+      "notes": "`opencode serve` 启动常驻 headless HTTP 服务并可设 hostname/port，支持多客户端（TUI、Web、attach）连接同一实例。",
+      "evidence": "packages/opencode/src/cli/cmd/serve.ts\npackages/opencode/src/server/server.ts"
+    },
+    "run.remote-protocol": {
+      "status": "yes",
+      "notes": "服务端以 Effect HttpApi + OpenAPI 暴露 REST 接口与 WebSocket 事件流，另有 ACP（JSON-RPC over stdio）供编辑器集成，TUI/客户端通过 SDK 调用。",
+      "evidence": "packages/opencode/src/server/server.ts\npackages/opencode/src/server/routes/instance/httpapi/server.ts\npackages/opencode/src/acp/service.ts"
+    },
+    "ext.plugins": {
+      "status": "yes",
+      "notes": "Plugin 服务加载内置鉴权插件与配置声明的 npm/本地插件，PluginLoader 解析规格、安装并动态 import，trigger 统一派发 hook；插件在宿主进程内运行，无独立沙箱。",
+      "evidence": "packages/opencode/src/plugin/index.ts\npackages/opencode/src/plugin/loader.ts\npackages/opencode/src/plugin/install.ts",
+      "detailMd": "插件系统由 plugin/index.ts、loader.ts、install.ts 组成。配置中的 `plugin` 条目先由 PluginLoader 解析为 spec/options，区分 npm 包与本地路径，必要时用 Bun 安装到缓存目录并校验兼容性，然后动态 import 得到导出 hooks 的模块；built-in 插件（Codex/Copilot/GitLab/Poe/Azure/Cloudflare/xAI 等鉴权）直接函数式注册。`Plugin.Service.trigger(name, input, output)` 遍历 hooks 并按序执行“输入+可变输出”模式，覆盖 tool.execute.before/after、tool.definition、chat.params、chat.message、shell.env、permission.ask、event 以及 experimental.chat.system.transform、experimental.session.compacting、experimental.text.complete 等。插件还能通过 `tool` 字段注册自定义工具、通过 auth 提供 OAuth。插件与宿主同进程，获得完整 Node 能力，没有运行时隔离或权限沙箱；TUI 插件则走单独的 slot 注册通道。",
+      "detailEvidence": "packages/opencode/src/plugin/index.ts\npackages/opencode/src/plugin/loader.ts\npackages/opencode/src/plugin/install.ts\npackages/opencode/src/tool/registry.ts"
+    },
+    "ext.marketplace": {
+      "status": "partial",
+      "notes": "插件以 npm 包或本地目录方式在 config 中声明并自动安装，生态文档列出社区插件；但没有内置的插件市场 UI、评分/搜索目录或版本管理界面。",
+      "evidence": "packages/opencode/src/plugin/install.ts\npackages/web/src/content/docs/plugins.mdx\npackages/web/src/content/docs/ecosystem.mdx"
+    },
+    "ext.hooks": {
+      "status": "yes",
+      "notes": "插件可注册工具执行前后、消息转换、chat.params、shell.env、permission.ask 与事件等 hook，在运行时以 trigger 方式同步/异步介入。",
+      "evidence": "packages/opencode/src/plugin/index.ts\npackages/web/src/content/docs/plugins.mdx"
+    },
+    "ext.skills": {
+      "status": "yes",
+      "notes": "Skill 服务从 .opencode/skills、.claude/skills、.agents/skills 等目录发现 SKILL.md，解析 frontmatter 与资源，经 skill 工具按需加载并注入说明；系统提示列出来可用技能。",
+      "evidence": "packages/opencode/src/skill/index.ts\npackages/opencode/src/tool/skill.ts"
+    },
+    "ext.commands": {
+      "status": "yes",
+      "notes": "支持 .opencode/command(s) 与 config 中的 Markdown 命令模板，展开 $1/$ARGUMENTS 占位符、shell 插值与 MCP prompt，可作为斜杠命令触发代理或子任务。",
+      "evidence": "packages/opencode/src/command/index.ts\npackages/opencode/src/config/command.ts"
+    },
+    "ext.plugin-ui": {
+      "status": "yes",
+      "notes": "TUI 通过 @opentui/solid 的 slot registry 提供插件渲染插槽，TUI 插件可注册自定义组件/面板；Web 侧也以 React/Solid 组件方式扩展。",
+      "evidence": "packages/tui/src/plugin/slots.tsx\npackages/tui/src/plugin/api.ts"
+    },
+    "mcp.stdio": {
+      "status": "yes",
+      "notes": "mcp/index.ts 使用 @modelcontextprotocol/sdk 的 StdioClientTransport，按配置的 command/args/env 启动本地 MCP 子进程，带超时连接、ListRoots 根目录与工具/资源/提示收集。",
+      "evidence": "packages/opencode/src/mcp/index.ts\npackages/opencode/src/mcp/catalog.ts",
+      "detailMd": "stdio 传输在 mcp/index.ts。`createClient()` 构造 MCP SDK Client，注册 `ListRootsRequestSchema` 返回当前目录的 file:// root；配置项出现 command 时走 `StdioClientTransport({ command, args, env })`，通过 `connectTransport()` 在超时内 connect，失败则关闭 transport 并标记 failed 状态。连接成功后统一收集 tools/prompts/resources，工具名经 McpCatalog 清洗（server 前缀+本地名）后注入 ToolRegistry，权限通过 permission 规则按工具名过滤。远程场景按 StreamableHTTP 再 SSE 顺序尝试并支持 OAuth；stdio 进程 pid 可被记录以便取消。客户端能力只声明 roots，sampling/elicitation/tasks 暂未开启。整体实现依托官方 SDK，支持工具列表变更通知与状态事件。",
+      "detailEvidence": "packages/opencode/src/mcp/index.ts\npackages/opencode/src/mcp/catalog.ts\npackages/opencode/src/tool/registry.ts"
+    },
+    "mcp.remote": {
+      "status": "yes",
+      "notes": "同一模块支持 StreamableHTTP 与 SSE 两种远程传输，按顺序尝试连接并处理鉴权失败；远程 server 可配置 headers/超时。",
+      "evidence": "packages/opencode/src/mcp/index.ts"
+    },
+    "mcp.oauth": {
+      "status": "yes",
+      "notes": "mcp/oauth-provider.ts 与 auth.ts 实现远程 MCP 的 OAuth 授权码流程、回调端口、令牌存储与 finishAuth 刷新，遇 UnauthorizedError 时触发登录。",
+      "evidence": "packages/opencode/src/mcp/oauth-provider.ts\npackages/opencode/src/mcp/auth.ts"
+    },
+    "mcp.resources": {
+      "status": "yes",
+      "notes": "MCP 服务暴露 prompts/resources 列表、getPrompt、readResource，并把文本或受支持二进制资源转换为消息 part；工具列表变更通知通过事件同步。",
+      "evidence": "packages/opencode/src/mcp/index.ts\npackages/opencode/src/session/prompt.ts"
+    },
+    "agent.subagents": {
+      "status": "yes",
+      "notes": "task 工具按 subagent_type 创建独立子会话，继承/收窄权限后运行 promptOps.prompt，把结果以 task_result 标签回灌；支持 task_id 续跑与 background 后台执行。",
+      "evidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/agent/agent.ts\npackages/opencode/src/agent/subagent-permissions.ts",
+      "detailMd": "子智能体由 tool/task.ts 的 TaskTool 实现。参数含 description、prompt、subagent_type 与可选 task_id/command/background。执行时先经 `deriveSubagentSessionPermission` 从父代理权限派生并收窄子会话规则，创建带 parentID 的子 Session，然后通过注入的 `promptOps.prompt` 在子会话中运行同一套 runLoop，工具调用仍受权限询问约束。结果按 `<task id state><task_result>` 结构返回给父模型；task_id 可恢复同一子会话继续，background=true 时交给 BackgroundJob，完成后通过 inject 向父会话插入完成/错误消息实现通知。内置 general/explore 子代理以及用户自定义 agent（mode=subagent）都可被选择，描述列表由 ToolRegistry.describeTask 按权限过滤生成。子任务与主循环共用同一 session/processor 流程，因此天然继承流式、压缩与权限能力。",
+      "detailEvidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/agent/agent.ts\npackages/opencode/src/agent/subagent-permissions.ts\npackages/opencode/src/background/job.ts"
+    },
+    "agent.workflows": {
+      "status": "no",
+      "notes": "没有声明式或脚本化的多步骤/多代理工作流引擎；多代理能力仅限于 task 工具派生单个子代理，编排需由模型在对话中自行串接。",
+      "evidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/background/job.ts"
+    },
+    "agent.background-notify": {
+      "status": "yes",
+      "notes": "后台 task 通过 BackgroundJob 运行，wait 完成后由 notifyBackgroundResult 向父会话注入 completed/error 合成消息，实现自动通知，无需轮询。",
+      "evidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/background/job.ts\npackages/core/src/background-job.ts"
+    },
+    "agent.cron": {
+      "status": "no",
+      "notes": "没有内置 cron/间隔调度器自动触发会话；GitHub Action 虽有 schedule 事件支持，但那是外部 CI 触发，不属于应用内定时任务。",
+      "evidence": "packages/opencode/src/background/job.ts\npackages/opencode/src/cli/cmd/github.ts"
+    },
+    "agent.remote-control": {
+      "status": "partial",
+      "notes": "`opencode attach <url>` 可让另一台设备上的 TUI 连接运行中的 server 接管/查看会话，支持 basic auth 与 continue/session；但没有专门的手机端远程控制应用。",
+      "evidence": "packages/opencode/src/cli/cmd/attach.ts\npackages/opencode/src/server/server.ts\npackages/web/src/content/docs/server.mdx"
+    },
+    "agent.ci": {
+      "status": "yes",
+      "notes": "提供官方 GitHub Action（/opencode 评论触发解释、修复、审查、开 PR）与 CLI github 处理器，支持 issue/PR/review 注释与 schedule/workflow_dispatch；GitLab 也有 provider 集成。",
+      "evidence": "github/action.yml\npackages/opencode/src/cli/cmd/github.ts\npackages/web/src/content/docs/github.mdx"
+    },
+    "config.layered": {
+      "status": "yes",
+      "notes": "Config 服务按全局 config.json/opencode.json(c)、OPENCODE_CONFIG、项目/目录级配置、托管配置逐层 mergeDeep 合并（数组拼接），支持变量替换与 plugin 来源追踪。",
+      "evidence": "packages/opencode/src/config/config.ts\npackages/core/src/config.ts"
+    },
+    "config.hot-reload": {
+      "status": "partial",
+      "notes": "配置通过 cachedInvalidateWithTTL 缓存，API 的 update/updateGlobal 写盘后会 invalidate 使新配置生效；但没有文件系统 watcher，外部手工编辑不会在运行中即时热加载。",
+      "evidence": "packages/opencode/src/config/config.ts\npackages/core/src/config/watcher.ts"
+    },
+    "config.managed": {
+      "status": "yes",
+      "notes": "config/managed.ts 读取 macOS MDM（managed plist）与 /etc/opencode、ProgramData 等系统目录的托管配置，组织级策略可覆盖用户配置。",
+      "evidence": "packages/opencode/src/config/managed.ts\npackages/web/src/content/docs/enterprise.mdx"
+    },
+    "obs.otel": {
+      "status": "partial",
+      "notes": "LLM 调用与代理生成可通过 experimental.openTelemetry 开关接入 @effect/opentelemetry tracer 导出 span；默认关闭，属于实验能力。",
+      "evidence": "packages/opencode/src/session/llm.ts\npackages/opencode/src/agent/agent.ts"
+    },
+    "obs.usage": {
+      "status": "yes",
+      "notes": "`opencode stats` 汇总会话数、消息数、token（输入/输出/推理/缓存）与费用、工具与模型用量；单次响应也记录 cost/tokens 并展示。",
+      "evidence": "packages/opencode/src/cli/cmd/stats.ts\npackages/opencode/src/session/session.ts"
+    },
+    "obs.eval": {
+      "status": "no",
+      "notes": "未发现官方评测集、回归评测框架或 eval 命令；仓库只有单元/集成测试与用量统计，不提供衡量代理能力的评测流水线。",
+      "evidence": "packages/opencode/src/cli/cmd/stats.ts\npackages/web/src/content/docs/cli.mdx"
+    },
+    "config.enterprise-auth": {
+      "status": "partial",
+      "notes": "仓库未实现 SSO/SCIM/审计；提供 MDM 托管配置、provider 级 policies 与自托管 share 应用，Enterprise SSO 依赖中央配置和外部身份/网关。",
+      "evidence": "packages/opencode/src/config/managed.ts\npackages/core/src/policy.ts\npackages/web/src/content/docs/enterprise.mdx\npackages/enterprise/src/routes/share.tsx"
+    }
+  }
+}

@@ -1,0 +1,50 @@
+{
+  "agent-loop.tool-call-loop": {
+    "overviewMd": "工具调用主循环是 agent 运行时的心脏：模型请求工具、harness 执行并把结果回灌，直到模型给出终态。对比重点在循环终止条件、工具并发粒度、中断与转向、循环防护，以及与上下文压缩的衔接。",
+    "diffSummaryMd": "四家都在会话循环内完成「采样 → 执行 → 回灌」。Codex 由 task 层驱动，ToolOrchestrator 统一审批与沙箱，ToolCallRuntime 按并行度执行；opencode 用 processor 消费 AI SDK 流事件，runLoop 依据 finish 状态续轮，并带 DOOM_LOOP_THRESHOLD 与 SessionRetry 防护；pi 的 runAgentLoop/runLoop 分离内外循环，参数校验、before/after 钩子与顺序/并行执行器齐备，还能把截断的工具参数整批判失败；wave-agent 在 sendAIMessage 中按 isConcurrencySafe 分组，只读工具并行、写工具串行。差异集中在并发粒度与防护：opencode 的循环防护最系统，pi 的钩子与截断处理最细，wave-agent 的只读并行策略最保守。"
+  },
+  "tools.file-edit": {
+    "overviewMd": "写入与编辑决定模型改代码的可靠性：新建/覆盖文件，以及基于精确匹配的局部编辑。对比重点在编辑格式、模糊匹配与唯一性校验、并发控制、写入原子性，以及是否强制「先读后改」。",
+    "diffSummaryMd": "Codex 以 freeform apply_patch 为主，流式解析、上下文精确匹配、原子写回，天然支持多文件；opencode 走 oldString/newString 多级模糊匹配器加唯一性校验，按文件加锁、保留 BOM/CRLF、写后跑格式化与 LSP 诊断，并为部分 GPT 模型提供 apply_patch；pi 的 edits[] 批量替换、NFKC/引号归一化模糊匹配、按路径串行；wave-agent 要求先读后改，old_string 唯一匹配、replace_all 显式全替换、临时文件原子写，并检测读取后的文件漂移。四者都做了文件级串行，区别在「先读后改」是否强制（仅 wave-agent 强制）与编辑格式（补丁式 vs 字符串替换）。"
+  },
+  "permissions.sandbox": {
+    "overviewMd": "OS 级沙箱借助 Seatbelt、Bubblewrap、Landlock 等内核机制限制进程的文件与网络访问，是审批规则之外的强制边界。对比重点在平台覆盖、文件/网络策略、与审批层的协作方式，以及默认启用程度。",
+    "diffSummaryMd": "Codex 最完整：macOS Seatbelt、Linux bubblewrap + seccomp + Landlock、Windows 受限令牌，SandboxManager 按策略生成，网络走受管代理白名单，沙箱失败再按审批升级；wave-agent 借助 @anthropic-ai/sandbox-runtime 提供 Seatbelt/bubblewrap 与文件/域名白名单，仅支持 macOS/Linux（WSL2），与审批规则解耦成双层防线；pi 核心明确不内置沙箱，官方示例扩展可给 bash 套 Seatbelt/bubblewrap，属于可选加固；opencode 没有内核级沙箱，只有规则审批与工作区外提示。总体隔离强度：Codex > wave-agent > pi（扩展）> opencode。"
+  },
+  "context.system-prompt": {
+    "overviewMd": "系统提示按模型、模式与环境动态拼装，决定工具使用规范与项目上下文。对比重点在模板选择策略、动态注入内容、缓存友好的分层方式，以及扩展覆盖点。",
+    "diffSummaryMd": "四家都采用「稳定前缀 + 动态环境」以命中 prompt cache。Codex 用 include_str! 打包模型专用模板，按模型与能力选择并注入 AGENTS.md、时间提醒，TUI/exec/app-server 共享同一构造路径；opencode 按 model.api.id 选择 anthropic/gpt/gemini/kimi 等模板，动态注入环境、git 状态、技能清单与 MCP 说明，插件可通过 system.transform 覆盖；pi 的 buildSystemPrompt 汇总人设、工具 snippet/guidelines、技能 XML、项目上下文与 SYSTEM.md/追加提示，工具集变化时重建；wave-agent 以命名 section 组织并显式标注 shared/session 缓存边界，默认启用精简提示档。差异在模板颗粒度与扩展点：opencode 的模型专属模板最多，wave-agent 的缓存边界最显式，pi 的追加机制最灵活。"
+  },
+  "context.compaction": {
+    "overviewMd": "上下文接近上限时自动摘要历史并继续任务，是长会话可用性的关键。对比重点在触发估算、保留策略（保留多少尾部、如何修剪工具输出）、摘要结构与写回方式，以及失败与溢出兜底。",
+    "diffSummaryMd": "Codex 有本地摘要与服务端远程压缩两条路径，保留用户目标与近期消息，压缩前后触发 PreCompact/PostCompact 钩子，仍溢出时裁剪重试；opencode 在 compaction.ts 中按 turn 估算保留尾部、修剪旧工具输出，生成摘要消息与 compaction part，插件可注入 context/prompt，支持自动续跑；pi 以 contextWindow − reserveTokens 触发，keepRecentTokens 找切点，输出 Goal/Progress/Next Steps 等结构化摘要写入 CompactionEntry，溢出时 compact-and-retry；wave-agent 复用主循环 prompt fork 压缩回合以命中缓存，写回前校验会话未切换，连续失败 3 次触发断路器。四家都保留近期尾部，差异在触发估算、摘要结构与安全护栏。"
+  },
+  "memory.project": {
+    "overviewMd": "项目记忆让 agent 跨会话复用项目知识。对比重点在存储载体（指令文件/记忆库）、加载作用域与层级、自动写入能力，以及上下文占用控制。",
+    "diffSummaryMd": "Codex 以 AGENTS.md/AGENTS.override.md 向上发现合并为主，另有 memories 子系统自动提炼补足；opencode 只有指令文件机制（全局 + findUp 首个命中）并注入系统提示，只读不写，故为 partial；pi 从 cwd 向上收集 AGENTS.override/AGENTS/CLAUDE，去重后注入，无自动写入或检索；wave-agent 分三层：项目 AGENTS.md（@include 递归，64KB/512KB 限额）、Read 时按目录注入嵌套记忆、.wave/rules 路径规则，再加会话结束时的受限自动记忆回合。层次与自动化程度 wave-agent 最完整，Codex 有自动记忆补足，pi 稳定但纯静态，opencode 最简。"
+  },
+  "session.persistence": {
+    "overviewMd": "会话持久化决定历史能否恢复、分支与回滚。对比重点在落盘格式（JSONL/SQLite）、事件模型、恢复与分支方式、写入并发安全，以及清理策略。",
+    "diffSummaryMd": "Codex 用 JSONL rollout 加 SQLite state_db 保存索引与元数据，compression 压缩历史，thread-store 统一读写供 TUI/exec/app-server 复用；opencode 已迁移到 SQLite + Drizzle（SessionTable/PartTable），part 级流式写入、游标分页，快照 patch 支撑回滚，旧 JSON 仅作兼容；pi 是 append-only JSONL 树（id/parentId 构成版本树，v3 迁移），并新增 node:sqlite 后端与 harness 会话模型；wave-agent 用 JSONL 追加写（首行 metadata header），加载时重建消息与 usage，快照单独存 file-history，按 cleanupPeriodDays 清理。格式上 opencode 最「数据库化」，pi 的树结构最适合分支，Codex 与 wave-agent 最接近事件日志。"
+  },
+  "models.providers": {
+    "overviewMd": "多 Provider 接入用统一抽象屏蔽各家模型 API 差异。对比重点在内置 provider 覆盖面、自定义端点与兼容协议支持、鉴权方式（API Key/OAuth），以及模型能力与错误处理。",
+    "diffSummaryMd": "Codex 的 ModelProviderInfo 统一 base_url、wire_api、认证与重试，内置 OpenAI、Bedrock、Vertex、Ollama、LM Studio，config.toml 可扩展；opencode 基于 AI SDK 的 BUNDLED 动态 import 覆盖十余家 provider，合并 models.dev 目录与用户自定义 npm/OpenAI 兼容配置，并有 auth OAuth 插件；pi 在 pi-ai 中定义 Provider 抽象与数十家工厂及协议适配器（anthropic-messages、openai-completions/responses、google-generative-ai 等），扩展可注册新 provider；wave-agent 只分派三类协议（OpenAI chat、OpenAI responses、Anthropic messages），模型可配 baseUrl/apiKey/apiType，统一 10 次指数退避重试。覆盖面 opencode 与 pi 最广，wave-agent 最精简但协议划分清晰。"
+  },
+  "interface.tui": {
+    "overviewMd": "终端界面是主要交互入口，承载流式展示与工具审批。对比重点在渲染栈与重绘策略、输入与键位、diff 展示、斜杠命令与运行中转向，以及是否能连接远程实例。",
+    "diffSummaryMd": "Codex 用 ratatui（Rust）自绘，流式对话、工具卡片、Markdown/Diff、slash 命令与运行中转向，状态栏聚合模型 token 与 git 信息；opencode 的 TUI 是 SolidJS + @opentui/core，连接本地 server 消费事件流，因此可 attach 到远程实例，支持 30+ 主题与插件插槽；pi 自研组件化 TUI，按行差量重绘，支持 overlay、Kitty 键盘协议与 IME 光标；wave-agent 是 React Ink 应用，reducer 驱动流式更新，并与 print/stdio/daemon 三种非交互入口共用事件回调。渲染栈从 Rust 到 SolidJS 到自研到 Ink，差异还体现在远程 attach 与插件化能力上。"
+  },
+  "ext.plugins": {
+    "overviewMd": "插件系统扩展 agent 的工具、命令、钩子与 UI。对比重点在清单与发现机制、可注册能力、运行时隔离与热重载，以及插件与审批沙箱的关系。",
+    "diffSummaryMd": "Codex 由 plugin/plugin-host 管理清单（skills、MCP、apps、hooks），市场支持安装与版本管理，插件不能绕过审批与沙箱；opencode 加载 npm/本地插件，trigger 统一分发 tool/chat/permission/system.transform 等钩子，插件与宿主同进程、无运行时隔离；pi 用 jiti 加载 TypeScript 扩展，ExtensionAPI 覆盖工具/命令/快捷键/provider/生命周期，同权限运行但示例生态丰富；wave-agent 用 .wave-plugin/plugin.json 清单注册命令/代理/技能/hooks/MCP/UI mods，mods 在 Node vm 的受控 API 中执行，形成轻量沙箱。隔离程度上 wave-agent 最明显，Codex 靠宿主约束，opencode 与 pi 明确同进程运行。"
+  },
+  "mcp.stdio": {
+    "overviewMd": "MCP stdio 以子进程 stdio 连接本地 MCP 服务器，是最常见的 MCP 接入方式。对比重点在 SDK 依赖、进程生命周期、握手与能力收集、工具命名与权限集成，以及失败重连。",
+    "diffSummaryMd": "Codex 基于 rmcp，stdio_server_launcher 启动子进程、local_stdio_transport 处理 JSON-RPC 帧与 stderr，握手后把 tools/resources 注册进工具清单并走统一审批/沙箱；opencode 用官方 @modelcontextprotocol/sdk 的 StdioClientTransport，带超时 connect、ListRoots 根目录与 tools/prompts/resources 收集；wave-agent 同样基于官方 SDK，统一 stdio/SSE/StreamableHTTP 三种传输，惰性拨号、工具列表快照与命名空间隔离；pi 没有 MCP 客户端（README 明确 No MCP），只能靠扩展自建桥接。前三家实现路线接近，差异在生命周期管理与错误处理。"
+  },
+  "agent.subagents": {
+    "overviewMd": "子智能体派生独立上下文执行子任务并汇总结果，是并行与隔离任务的主要手段。对比重点在上下文隔离、工具与权限继承、并发与后台执行、结果回传机制，以及是否为内置能力。",
+    "diffSummaryMd": "Codex 有完整的子代理注册、消息邮箱与并发准入，spawn/send/wait/close 工具可配模型角色与工具集，并继承审批与沙箱；opencode 的 TaskTool 按 subagent_type 创建子会话，权限收窄、task_id 续跑、background 后台执行与完成通知；wave-agent 的 subagentManager 为子代理创建独立 aiManager、预算与 readFileState，内置 Explore/general-purpose/plan/vision，支持 markdown 自定义与 /subtask fork；pi 核心无子代理 API，官方示例扩展通过 spawn 新 pi 进程实现 single/parallel/chain。前三家是一等公民能力，pi 属于扩展层实现。"
+  }
+}

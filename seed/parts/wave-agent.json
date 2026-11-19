@@ -1,0 +1,456 @@
+{
+  "slug": "wave-agent",
+  "repo": "https://github.com/netease-lcap/wave-agent",
+  "analyzedAt": "2026-11-19",
+  "features": {
+    "agent-loop.streaming": {
+      "status": "yes",
+      "notes": "aiService 以流式回调逐块返回文本、推理与工具调用增量，aiManager 分别触发 onContentDelta/onReasoningDelta，CLI 与各宿主按增量渲染而不轮询。",
+      "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/services/aiService.ts\npackages/agent-sdk/src/types/messaging.ts"
+    },
+    "agent-loop.tool-call-loop": {
+      "status": "yes",
+      "notes": "sendAIMessage 循环执行「请求模型→执行工具→回灌结果」，只读工具并行、写工具串行，直到无工具调用或达到 maxTurns，支持中断与 hook 阻断。",
+      "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/toolManager.ts\npackages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/services/aiService.ts",
+      "detailMd": "主循环位于 `packages/agent-sdk/src/managers/aiManager.ts` 的 `sendAIMessage()`：先固定本轮配置快照，调用 `services/aiService.ts` 发起模型请求，流式回调累积文本、推理与 tool_use 块。收到工具调用后循环交给 `toolManager.execute()`；每次执行前后分别触发 PreToolUse/PostToolUse hook，hook 可阻断调用或改写输入，执行结果（含图片 ingest）回灌为 tool_result 消息，再次请求模型，直到没有新的工具调用或命中 maxTurns。\n\n并发策略按 `isConcurrencySafe` 分组：连续只读工具（Read/Grep/Glob 等）合并成一批用 Promise.all 并行，Edit/Write/MCP 等有副作用工具串行，避免同一文件被并发改写；批次之间保持模型给出的顺序。中断方面 `abortAIMessage()`/`abortTurn(turnId)` 通过 AbortController 结束请求并停止后续批次，已完成的工具结果仍会落盘。每轮输出与压缩等操作计入 `turnBudgetLedger`，供预算与防护判断。",
+      "detailEvidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/toolManager.ts\npackages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts"
+    },
+    "agent-loop.steering": {
+      "status": "yes",
+      "notes": "messageQueue/messageManager 维护运行期消息队列，用户插话在下一次请求前注入；若 Stop hook 想续跑但队列中有用户消息，则先结束当前轮让用户消息优先。",
+      "evidence": "packages/agent-sdk/src/managers/messageQueue.ts\npackages/agent-sdk/src/managers/messageManager.ts\npackages/agent-sdk/src/managers/aiManager.ts\npackages/code/src/components/QueuedMessageList.tsx"
+    },
+    "agent-loop.plan-mode": {
+      "status": "yes",
+      "notes": "具备 plan 权限模式：只读探索、PlanManager 维护计划文件，EnterPlanMode/ExitPlanMode 工具切换，CLI 有 PlanView 展示；压缩后会重新注入计划提醒。",
+      "evidence": "packages/agent-sdk/src/managers/planManager.ts\npackages/agent-sdk/src/tools/enterPlanMode.ts\npackages/agent-sdk/src/tools/exitPlanMode.ts\npackages/code/src/components/PlanView.tsx"
+    },
+    "agent-loop.loop-guard": {
+      "status": "yes",
+      "notes": "maxTurns 限制轮次，turnBudgetLedger 按轮记账，连续 3 次输出 token 超限即停止，abortAIMessage/abortTurn 可中止正在执行的请求与批次。",
+      "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts\npackages/agent-sdk/src/managers/messageQueue.ts"
+    },
+    "agent-loop.background-tasks": {
+      "status": "yes",
+      "notes": "Bash/PowerShell 支持后台运行，backgroundTaskManager 与 foregroundTaskManager 管理生命周期，/tasks 与 BackgroundTaskManager 面板查看、取回结果并通知主循环。",
+      "evidence": "packages/agent-sdk/src/managers/backgroundTaskManager.ts\npackages/agent-sdk/src/tools/bashTool.ts\npackages/code/src/components/BackgroundTaskManager.tsx"
+    },
+    "tools.file-read": {
+      "status": "yes",
+      "notes": "readTool 支持按 offset/limit 行区间读取、空行与大文件截断、图片与二进制识别（toolImageIngest），并把读取状态记入 readFileState 供编辑校验与提醒。",
+      "evidence": "packages/agent-sdk/src/tools/readTool.ts\npackages/agent-sdk/src/utils/toolImageIngest.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts"
+    },
+    "tools.file-edit": {
+      "status": "yes",
+      "notes": "Write 整文件写入、Edit 精确 old_string 唯一匹配并支持 replace_all，要求先读后改，采用原子写；两者标记为非并发安全，与其他写工具串行执行。",
+      "evidence": "packages/agent-sdk/src/tools/editTool.ts\npackages/agent-sdk/src/tools/writeTool.ts\npackages/agent-sdk/src/tools/readTool.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts",
+      "detailMd": "写入由 `tools/writeTool.ts` 与 `tools/editTool.ts` 实现。Write 支持整文件创建/覆盖，并在写前记录 readFileState；Edit 要求先 Read 目标文件（读前校验），用 old_string 做唯一匹配，命中多处即报错，可用 replace_all 显式替换全部；写入采用临时文件加 rename 的原子写，保留文件权限与换行风格。\n\n`isConcurrencySafe` 对两者返回 false，因此在同一批工具调用中强制串行，避免基于同一基线的并发编辑互相覆盖。编辑后会更新 readFileState 基线并生成 changed-files 提醒；若文件在读取后被外部修改，会检测 hash/mtime 漂移并在结果中给出 stale 提示，要求模型重新读取后再改。另有 `utils/fileChangeReminder.ts` 把未读改动注入后续轮次，降低盲改风险。",
+      "detailEvidence": "packages/agent-sdk/src/tools/editTool.ts\npackages/agent-sdk/src/tools/writeTool.ts\npackages/agent-sdk/src/tools/readTool.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts"
+    },
+    "tools.shell": {
+      "status": "yes",
+      "notes": "bashTool 与 powershellTool 经 shellProvider 解析 shell，支持超时、输出截断、后台运行与工作目录；bashModeManager 提供持久 shell 会话。",
+      "evidence": "packages/agent-sdk/src/tools/bashTool.ts\npackages/agent-sdk/src/tools/powershellTool/powershellTool.ts\npackages/agent-sdk/src/managers/bashModeManager.ts"
+    },
+    "tools.search": {
+      "status": "yes",
+      "notes": "grepTool/globTool 基于 ripgrep，支持内容与文件名搜索、glob/type 过滤、结果上限与上下文行；另有 fileIndex/fileSearch 辅助快速索引。",
+      "evidence": "packages/agent-sdk/src/tools/grepTool.ts\npackages/agent-sdk/src/tools/globTool.ts\npackages/agent-sdk/src/utils/searchShell.ts"
+    },
+    "tools.lsp": {
+      "status": "yes",
+      "notes": "lspTool 配合 lspManager 启动/复用语言服务器，向模型提供诊断、定义、引用、符号等结构化查询，并把结果文本化回灌。",
+      "evidence": "packages/agent-sdk/src/tools/lspTool.ts\npackages/agent-sdk/src/managers/lspManager.ts"
+    },
+    "tools.web": {
+      "status": "partial",
+      "notes": "只有 webFetchTool（抓取 URL、10MB 上限、60 秒超时、LRU 缓存与 HTML 转文本），没有内置 Web 搜索后端或可配置搜索 provider。",
+      "evidence": "packages/agent-sdk/src/tools/webFetchTool.ts"
+    },
+    "tools.ask-user": {
+      "status": "yes",
+      "notes": "askUserQuestion 工具通过 interactionService 向宿主发出结构化问题（选项/多选/自由文本），阻塞等待回答后作为工具结果回灌。",
+      "evidence": "packages/agent-sdk/src/tools/askUserQuestion.ts\npackages/agent-sdk/src/services/interactionService.ts"
+    },
+    "tools.todo": {
+      "status": "yes",
+      "notes": "TaskCreate/Get/Update/List 工具维护任务清单，taskManager 持久化状态，CLI 的 TaskList 面板实时展示进度，任务提醒会注入后续轮次。",
+      "evidence": "packages/agent-sdk/src/tools/taskManagementTools.ts\npackages/agent-sdk/src/services/taskManager.ts\npackages/code/src/components/TaskList.tsx"
+    },
+    "tools.code-mode": {
+      "status": "yes",
+      "notes": "execTool 在 worker_threads 中运行模型编写的 JS，提供 tools.<name> 与 ToolSearch 等受控 API，不暴露 fs/网络/import，用于脚本化组合工具调用。",
+      "evidence": "packages/agent-sdk/src/tools/execTool.ts\npackages/agent-sdk/src/exec/execRuntime.ts"
+    },
+    "tools.custom": {
+      "status": "yes",
+      "notes": "mods 可通过 $.tool.register 注册新工具并声明 check/call，插件清单也可声明工具；注册后进入 toolManager 与模型工具表，参与权限与 hook 流程。",
+      "evidence": "packages/agent-sdk/src/mods/index.ts\npackages/agent-sdk/src/mods/runtime.ts\npackages/agent-sdk/src/managers/toolManager.ts"
+    },
+    "tools.patch": {
+      "status": "no",
+      "notes": "没有 apply_patch、统一 diff 或 MultiEdit 工具；批量修改需模型多次调用 Edit/Write（MultiEdit 仅出现在兼容显示逻辑）。",
+      "evidence": "packages/agent-sdk/src/constants/tools.ts\npackages/agent-sdk/src/builtin/plugins.ts"
+    },
+    "permissions.approval-modes": {
+      "status": "yes",
+      "notes": "PermissionMode 提供 default、acceptEdits、plan、bypassPermissions、dontAsk 五档，可在 CLI/设置中切换，并可按会话与工具输入动态求值。",
+      "evidence": "packages/agent-sdk/src/types/permissions.ts\npackages/agent-sdk/src/managers/permissionManager.ts"
+    },
+    "permissions.rule-engine": {
+      "status": "yes",
+      "notes": "permissionManager 支持 Tool(pattern) 形式的 allow/ask/deny 规则（含 Bash/PowerShell 通配与路径规则），按用户/项目/本地/托管多层合并，deny 优先。",
+      "evidence": "packages/agent-sdk/src/managers/permissionManager.ts\npackages/agent-sdk/src/types/permissions.ts"
+    },
+    "permissions.command-analysis": {
+      "status": "yes",
+      "notes": "shellCommandAnalysis 与 powershellStructure 解析管道、子命令、重定向与引号结构，权限判定按叶子命令逐条评估，写重定向会单独提权。",
+      "evidence": "packages/agent-sdk/src/utils/shell/shellCommandAnalysis.ts\npackages/agent-sdk/src/utils/powershellStructure/parseScript.ts\npackages/agent-sdk/src/managers/permissionManager.ts"
+    },
+    "permissions.outside-workspace": {
+      "status": "yes",
+      "notes": "以 workdir + additionalDirectories 定义安全区，isPathInSafeZone 检测越界读写；越界操作会触发询问或拒绝，/add-dir 可扩展目录。",
+      "evidence": "packages/agent-sdk/src/managers/permissionManager.ts\npackages/agent-sdk/src/types/permissions.ts"
+    },
+    "permissions.sandbox": {
+      "status": "yes",
+      "notes": "SandboxManager 按平台调用 Seatbelt（macOS）或 bubblewrap（Linux/WSL2），用沙箱包装工具命令，配合文件与网络白名单；Windows 不支持。",
+      "evidence": "packages/agent-sdk/src/sandbox/SandboxManager.ts\npackages/agent-sdk/src/sandbox/runtimeConfig.ts\ndocs/specs/core/bash-sandbox.md",
+      "detailMd": "`sandbox/SandboxManager.ts` 惰性加载 `@anthropic-ai/sandbox-runtime`，按平台选择后端：macOS 用 sandbox-exec/Seatbelt，Linux 用 bubblewrap 并配合代理，明确只支持 WSL2、不支持原生 Windows；缺少 bwrap/socat/rg 时降级为不可用并提示。\n\n`sandbox/runtimeConfig.ts` 的 `buildSandboxRuntimeConfig` 把权限上下文翻译为运行时配置：filesystem 的 denyRead/allowRead/allowWrite/denyWrite 以安全区（workdir 加 additionalDirectories）为基准，network 通过 allowedDomains/deniedDomains 控制出站域名；excludedCommands 允许指定命令绕过沙箱。\n\n沙箱与审批层解耦：`permissionManager` 仍先做规则/模式判定，只有需要执行的命令才交给沙箱包装，命令失败或被拒时回退到常规审批而不是静默放行；临时目录与代理端口由 getSandboxTempDir 管理。整体是「OS 内核隔离加规则引擎」双层防线。",
+      "detailEvidence": "packages/agent-sdk/src/sandbox/SandboxManager.ts\npackages/agent-sdk/src/sandbox/runtimeConfig.ts\npackages/agent-sdk/src/managers/permissionManager.ts\ndocs/specs/core/bash-sandbox.md"
+    },
+    "permissions.network": {
+      "status": "partial",
+      "notes": "网络策略只存在于 OS 沙箱配置（allowedDomains/deniedDomains）；沙箱不可用或命令被排除时，没有独立的代理/白名单层。",
+      "evidence": "packages/agent-sdk/src/sandbox/runtimeConfig.ts\npackages/agent-sdk/src/sandbox/SandboxManager.ts"
+    },
+    "permissions.persistence": {
+      "status": "yes",
+      "notes": "审批选择可展开为持久规则写入项目 settings.local.json（如 Bash(git status*)），下次匹配直接放行；支持手工撤销与按 shell 叶子展开。",
+      "evidence": "packages/agent-sdk/src/managers/permissionManager.ts\npackages/agent-sdk/src/utils/configPaths.ts"
+    },
+    "context.system-prompt": {
+      "status": "yes",
+      "notes": "buildSystemPromptSections 按命名 section（身份、安全、工具、环境、记忆、语言等）拼装，shared/session 分层形成缓存边界，默认启用精简提示档。",
+      "evidence": "packages/agent-sdk/src/prompts/index.ts\npackages/agent-sdk/src/services/leanPrompt.ts\npackages/agent-sdk/src/managers/aiManager.ts",
+      "detailMd": "系统提示由 `prompts/index.ts` 的 `buildSystemPromptSections()` 生成，再经 `buildSystemPromptBlocks()` 切成带缓存边界的块。提示按命名 section 组织：identity、security、url-guard、system、doing-tasks、executing-actions、tools、tone 或 lean harness、language、env、memory 等，每个 section 标注 shared 或 session 作用域；shared 部分（身份、安全、工具使用规范）放在稳定前缀以复用 prompt cache，session 部分（环境、目录、记忆、语言）逐轮可变。\n\n`services/leanPrompt.ts` 的 LEAN_PROMPT_DEFAULT_ENABLED 默认开启精简档，用更短的 harness 指令替代完整 doing-tasks/executing-actions，可配置。构建时还会合并工具 schema、技能列表、AGENTS.md 记忆、当前模式（plan）与模型能力（vision/缓存）等输入；`resolveSystemPromptOptions()` 负责解析调用方覆盖项，`buildMainSystemPrompt()` 在压缩、子代理等路径复用同一套 section 逻辑，保证 fork 请求前缀与主循环一致。",
+      "detailEvidence": "packages/agent-sdk/src/prompts/index.ts\npackages/agent-sdk/src/services/leanPrompt.ts\npackages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/prompts/planModeReminders.ts"
+    },
+    "context.instructions": {
+      "status": "yes",
+      "notes": "按工作目录读取 AGENTS.md（回退 CLAUDE.md），支持 @include、用户级 ~/.wave/AGENTS.md，并在 Read 访问子目录时按需注入嵌套指令文件。",
+      "evidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/utils/nestedMemory.ts"
+    },
+    "context.epochs": {
+      "status": "no",
+      "notes": "没有显式的上下文纪元模型；压缩是一次性摘要替换并清空 readFileState，未以 epoch 管理多代历史与重注入。",
+      "evidence": "packages/agent-sdk/src/managers/aiManager.ts\ndocs/specs/core/message-compact.md"
+    },
+    "context.token-accounting": {
+      "status": "yes",
+      "notes": "estimateContextTokens/getAutoCompactThreshold 估算上下文占用，usage 回调与 turnBudgetLedger 记录 token，/context 输出分项明细。",
+      "evidence": "packages/agent-sdk/src/utils/tokenCalculation.ts\npackages/agent-sdk/src/services/contextBreakdown.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts"
+    },
+    "context.compaction": {
+      "status": "yes",
+      "notes": "请求前按阈值自动压缩，或 /compact 手动触发；复用主循环 prompt 的 fork 生成摘要，写回前校验会话未切换，失败 3 次触发断路器。",
+      "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/utils/tokenCalculation.ts\npackages/agent-sdk/src/services/contentSummarizer.ts\ndocs/specs/core/message-compact.md",
+      "detailMd": "压缩入口是 `aiManager.compactConversation()`，由 `/compact`（manual）或请求前阈值 `maybeAutoCompactBeforeRequest()`（auto）触发。阈值来自 `utils/tokenCalculation.ts` 的 estimateContextTokens/getAutoCompactThreshold：以最近一条带 usage 的消息为锚估算上下文占比，超过阈值即压缩。\n\n压缩不另起模型，而是复用主循环的 system prompt、工具与生成参数 fork 一个压缩回合（runCompactFork），使请求前缀命中 prompt cache；提示要求模型输出 analysis 与 summary，formatCompactSummary 去掉草稿只保留摘要，再由 buildPostCompactContext 重新注入计划模式提醒、文件状态等恢复信息。\n\n写回前校验 sessionId 未切换，避免摘要写进用户刚切到的会话；成功后清空 readFileState 并重置连续失败计数。连续失败 3 次触发断路器停止自动压缩；PreCompact/PostCompact hook 与 mods 的 classic.PreCompact/session.compact 事件在前后提供扩展点。",
+      "detailEvidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/utils/tokenCalculation.ts\npackages/agent-sdk/src/services/contentSummarizer.ts\ndocs/specs/core/message-compact.md"
+    },
+    "context.compaction-hooks": {
+      "status": "yes",
+      "notes": "PreCompact/PostCompact hook 可在压缩前注入 additionalInstructions、压缩后处理；mods 另有 classic.PreCompact/session.compact 影子事件。",
+      "evidence": "packages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/managers/aiManager.ts"
+    },
+    "context.overflow-recovery": {
+      "status": "yes",
+      "notes": "请求前自动压缩与输出 token 连续超限恢复（3 次）构成主路径，超限时重规划并裁剪；请求失败计入预算后结束当前轮而非无限重试。",
+      "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/utils/tokenCalculation.ts"
+    },
+    "context.reminders": {
+      "status": "yes",
+      "notes": "taskReminder、fileChangeReminder、planModeReminders 在长任务中注入待办、未读文件变更与计划模式约束，压缩后也会重新挂载计划提醒。",
+      "evidence": "packages/agent-sdk/src/utils/taskReminder.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts\npackages/agent-sdk/src/prompts/planModeReminders.ts"
+    },
+    "memory.project": {
+      "status": "yes",
+      "notes": "项目根 AGENTS.md/CLAUDE.md 作为持久项目记忆加载，支持 @include 与 64KB/512KB 限额；嵌套目录记忆按 Read 访问路径注入。",
+      "evidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/utils/nestedMemory.ts\npackages/agent-sdk/src/managers/MemoryRuleManager.ts\npackages/agent-sdk/src/services/autoMemoryService.ts",
+      "detailMd": "项目记忆分三层加载。基础层由 `services/memory.ts` 的 MemoryService 读取 workdir 下的 AGENTS.md（缺失时回退 CLAUDE.md），支持 `@include` 递归展开（深度 5、单文件 64KB、总量 512KB）并原子写入；用户层是 ~/.wave/AGENTS.md，跨项目复用。\n\n目录层由 `utils/nestedMemory.ts` 在 Read 工具访问某子树时按需注入该目录的 AGENTS.md/CLAUDE.md，按 session 去重并做 worktree 路径映射，避免一次性塞满上下文。规则层由 MemoryRuleManager/MemoryRuleService 管理 `.wave/rules` 下带 `paths:` frontmatter 的规则，按路径 glob 与 priority 合并，用户级与项目级分层覆盖。\n\n自动记忆则由 autoMemoryService 在会话结束时 fork 一个受限回合，只允许只读工具和记忆目录内写入，把长期事实提炼到 ~/.wave/projects/<git-common-dir>/memory/MEMORY.md（入口 200 行、25,000 字符上限）。",
+      "detailEvidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/utils/nestedMemory.ts\npackages/agent-sdk/src/managers/MemoryRuleManager.ts\npackages/agent-sdk/src/services/autoMemoryService.ts"
+    },
+    "memory.user": {
+      "status": "yes",
+      "notes": "用户级 ~/.wave/AGENTS.md 跨项目加载，与项目记忆合并；自动记忆另存于 ~/.wave/projects/<git-common-dir>/memory/MEMORY.md。",
+      "evidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/constants/memory.ts"
+    },
+    "memory.auto": {
+      "status": "yes",
+      "notes": "autoMemoryService 在会话结束时 fork 受限回合提炼长期事实，只允许只读工具与记忆目录写入，入口限制 200 行/25,000 字符并提供 drain 超时。",
+      "evidence": "packages/agent-sdk/src/services/autoMemoryService.ts\npackages/agent-sdk/src/constants/memory.ts"
+    },
+    "memory.scoped": {
+      "status": "yes",
+      "notes": "MemoryRuleManager 加载 .wave/rules 下带 paths/priority frontmatter 的规则，按路径 glob 与优先级合并，区分用户级与项目级作用域。",
+      "evidence": "packages/agent-sdk/src/managers/MemoryRuleManager.ts\npackages/agent-sdk/src/services/MemoryRuleService.ts\npackages/agent-sdk/src/types/memoryRule.ts"
+    },
+    "session.persistence": {
+      "status": "yes",
+      "notes": "会话按 JSONL 追加写入 ~/.wave/projects，首行 metadata 记录 workdir/时间/分支，消息与事件逐行存储，支持加载、列举、截断与迁移。",
+      "evidence": "packages/agent-sdk/src/services/session.ts\npackages/agent-sdk/src/services/jsonlHandler.ts\npackages/agent-sdk/src/services/reversionService.ts\npackages/agent-sdk/src/utils/sessionCleanup.ts",
+      "detailMd": "会话以 JSONL 逐行落盘，目录为 ~/.wave/projects/<project>/，由 `services/jsonlHandler.ts` 负责追加、解析与截断；`services/session.ts` 在其上实现 create/load/list/truncate/relocate。每个转录首行是 metadata header（workdir/时间/分支/sessionId），后续每行是一条消息或事件（user/assistant/tool_result/usage/system），追加写保证崩溃时已完成的轮次可恢复。\n\n加载时 `loadSessionFromJsonl` 重建消息列表与 usage 汇总，`listSessions` 扫描项目目录按更新时间排序供 /resume 使用；`truncateSession` 用于 rewind 后截断尾部。恢复还依赖 `services/sessionEntries.ts` 与 `utils/transcriptPage.ts` 做分页与索引。\n\n文件改动快照单独放在 ~/.wave/file-history/<rootSessionId>，由 reversionService 管理，以便回滚时同时还原对话与工作区。清理由 utils/sessionCleanup.ts 按 cleanupPeriodDays（默认 30 天）删除过期会话并处理 worktree 残留。",
+      "detailEvidence": "packages/agent-sdk/src/services/session.ts\npackages/agent-sdk/src/services/jsonlHandler.ts\npackages/agent-sdk/src/services/reversionService.ts\npackages/agent-sdk/src/utils/sessionCleanup.ts"
+    },
+    "session.resume": {
+      "status": "yes",
+      "notes": "listSessions 扫描项目转录，/resume 与 ResumeCommand 按 id 或最近会话恢复，重建消息、usage 与工作目录上下文。",
+      "evidence": "packages/agent-sdk/src/services/session.ts\npackages/code/src/components/ResumeCommand.tsx"
+    },
+    "session.branch": {
+      "status": "no",
+      "notes": "没有从任意历史消息分叉会话的功能；仅有压缩用的临时 fork 与 /subtask 子代理，二者都不形成可继续的会话分支。",
+      "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/subagentManager.ts"
+    },
+    "session.rewind": {
+      "status": "yes",
+      "notes": "rewind 检查点结合 ~/.wave/file-history 文件快照，/rewind 与 RewindCommand 可回退对话并还原工作区改动，支持选择目标消息。",
+      "evidence": "packages/agent-sdk/src/managers/reversionManager.ts\npackages/agent-sdk/src/services/reversionService.ts\npackages/code/src/components/RewindCommand.tsx"
+    },
+    "session.export": {
+      "status": "no",
+      "notes": "没有导出 Markdown/JSON 会话的命令或 UI；transcriptPage 仅用于转录分页展示，不生成可分享文件。",
+      "evidence": "packages/agent-sdk/src/utils/transcriptPage.ts\npackages/code/src/constants/commands.ts"
+    },
+    "session.worktree": {
+      "status": "yes",
+      "notes": "EnterWorktree/ExitWorktree 工具与 worktreeUtils 为会话创建独立 git worktree，配合 worktreeHooks 与清理逻辑隔离改动。",
+      "evidence": "packages/agent-sdk/src/tools/enterWorktreeTool.ts\npackages/agent-sdk/src/tools/exitWorktreeTool.ts\npackages/agent-sdk/src/utils/worktreeUtils.ts"
+    },
+    "session.retention": {
+      "status": "yes",
+      "notes": "sessionCleanup 按 cleanupPeriodDays（默认 30 天）清理过期转录，并处理 worktree 残留；保留期可通过配置调整。",
+      "evidence": "packages/agent-sdk/src/utils/sessionCleanup.ts\npackages/agent-sdk/src/services/session.ts"
+    },
+    "models.providers": {
+      "status": "yes",
+      "notes": "aiService 统一分派 OpenAI chat/completions、/responses 与原生 Anthropic /messages 三类协议，模型可配 baseUrl/apiKey/apiType，支持兼容网关。",
+      "evidence": "packages/agent-sdk/src/services/aiService.ts\npackages/agent-sdk/src/utils/modelTransport.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts\npackages/agent-sdk/src/utils/anthropicMessagesClient.ts",
+      "detailMd": "Provider 抽象集中在 `services/aiService.ts`：按模型配置的 apiType 分派到三条线——OpenAI 兼容的 /chat/completions（utils/openaiClient.ts）、OpenAI /responses（services/responsesApi.ts）以及原生 Anthropic /messages（utils/anthropicMessagesClient.ts，带 x-api-key/Bearer 与 anthropic-version）。\n\n`utils/modelCapabilities.ts` 的 resolveApiType 决定走哪条，supportsPromptCaching/supportsVision 决定是否加 cache_control、是否允许图片。所有请求共享 `utils/modelTransport.ts` 的传输层：MAX_RETRIES=10、500ms 起指数退避至 32s、尊重 retry-after，对 429/5xx（501 除外）与网络错误重试。\n\n配置来自 configurationService 的分层合并（用户 ~/.wave/settings.json 与项目 .wave/settings 系列），每个 model 可自定义 baseUrl/apiKey/apiType/contextWindow/能力位；网关模式只需指向兼容端点。",
+      "detailEvidence": "packages/agent-sdk/src/services/aiService.ts\npackages/agent-sdk/src/utils/modelTransport.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts\npackages/agent-sdk/src/utils/anthropicMessagesClient.ts"
+    },
+    "models.catalog": {
+      "status": "partial",
+      "notes": "模型清单由用户/项目配置与远端设置下发，能力位（vision/cache）可配；没有内置的模型价格表或官方目录。",
+      "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts"
+    },
+    "models.auth": {
+      "status": "yes",
+      "notes": "支持 SSO 浏览器授权（authorization_code，JWT+refresh 存 ~/.wave/auth.json，401/403 自动刷新）以及模型 API Key 配置。",
+      "evidence": "packages/agent-sdk/src/services/authService.ts\npackages/agent-sdk/src/services/configurationService.ts"
+    },
+    "models.roles": {
+      "status": "yes",
+      "notes": "主模型之外可配置 fastModel、压缩/记忆 fork 模型、visionModel 与子代理模型（plan 用 inherit），按用途解析不同配置。",
+      "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/agent-sdk/src/builtin/subagents.ts\npackages/agent-sdk/src/managers/aiManager.ts"
+    },
+    "models.caching": {
+      "status": "yes",
+      "notes": "对支持的模型在消息/工具前缀加 cache_control: ephemeral，系统提示按 shared/session 分层，压缩 fork 复用同一前缀以命中缓存。",
+      "evidence": "packages/agent-sdk/src/utils/cacheControlUtils.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts\npackages/agent-sdk/src/managers/aiManager.ts"
+    },
+    "models.multimodal": {
+      "status": "yes",
+      "notes": "readTool 与宿主附件可产生图片输入，经 toolImageIngest/imageRewrite 规范化后按模型能力以 image_url/base64 传给 vision 模型。",
+      "evidence": "packages/agent-sdk/src/utils/toolImageIngest.ts\npackages/agent-sdk/src/utils/imageRewrite.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts"
+    },
+    "models.retry": {
+      "status": "yes",
+      "notes": "modelTransport 对 429、5xx（501 除外）与网络错误重试 10 次，指数退避 500ms→32s 并尊重 retry-after；模型角色可指定备用模型。",
+      "evidence": "packages/agent-sdk/src/utils/modelTransport.ts\npackages/agent-sdk/src/services/configurationService.ts"
+    },
+    "interface.tui": {
+      "status": "yes",
+      "notes": "React Ink TUI 提供流式消息、工具卡片、审批 diff、队列消息、历史搜索与斜杠命令，另有 print/stdio/daemon 三种非交互入口。",
+      "evidence": "packages/code/src/cli.tsx\npackages/code/src/components/App.tsx\npackages/code/src/components/ChatInterface.tsx\npackages/code/src/constants/commands.ts",
+      "detailMd": "CLI 是 React Ink 应用，入口 `packages/code/src/cli.tsx`，主界面在 App.tsx/ChatInterface.tsx：用 Ink 的 Box/Text 组件渲染消息流、工具卡片、确认框与输入框，流式增量经 reducer 更新，避免整屏重绘。\n\n输入层支持斜杠命令（constants/commands.ts 定义 tasks/mcp/agents/skills/hooks/rewind/context/model/resume/compact/subtask 等）、@ 文件选择、历史搜索与 Esc 中断；QueuedMessageList 展示运行期排队消息。工具审批用 ConfirmationSelector/ConfirmationDetails 呈现 diff 与命令，DiffDisplay/CompactDisplay/ReasoningDisplay 分别展示改动、压缩进度与思考。\n\n除交互 TUI 外，同一包还提供 print-cli.ts（headless）、stdio-cli.ts（IDE 桥）与 daemon-cli.ts，共用 agent 的事件回调与控制协议。",
+      "detailEvidence": "packages/code/src/cli.tsx\npackages/code/src/components/ChatInterface.tsx\npackages/code/src/components/QueuedMessageList.tsx\npackages/code/src/components/DiffDisplay.tsx"
+    },
+    "interface.vscode": {
+      "status": "yes",
+      "notes": "packages/vscode 提供 wave-vscode（CodeWave IDE）扩展，复用 webview UI 与 agent-sdk，通过 stdio 桥接会话与编辑器上下文。",
+      "evidence": "packages/vscode/package.json\npackages/vscode/src/session/messageHandler.ts"
+    },
+    "interface.jetbrains": {
+      "status": "yes",
+      "notes": "packages/jetbrains 是 Gradle/Kotlin 插件，内嵌 webview 资源并连接同一 agent-sdk/stdio 桥，覆盖 JetBrains 系列 IDE。",
+      "evidence": "packages/jetbrains/build.gradle.kts\npackages/jetbrains/src/main/kotlin"
+    },
+    "interface.desktop": {
+      "status": "yes",
+      "notes": "packages/desktop 为 Electron 应用（wave-desktop），主进程管理窗口与更新，渲染层复用 webview，支持桌面端会话与设置。",
+      "evidence": "packages/desktop/package.json\npackages/desktop/src/main/navigationGuard.ts"
+    },
+    "interface.web": {
+      "status": "partial",
+      "notes": "webview 是共享 React 界面，被 VS Code、JetBrains、桌面与远程页面复用；仓库内没有独立的浏览器 Web 应用入口。",
+      "evidence": "packages/webview/package.json\npackages/webview/src/index.tsx"
+    },
+    "interface.themes": {
+      "status": "partial",
+      "notes": "提供亮/暗主题（data-theme 检测与主题样式），可在设置中切换；未发现用户自定义配色或键位绑定配置。",
+      "evidence": "packages/webview/src/utils/theme.ts\npackages/webview/src/components/SettingsPage.tsx"
+    },
+    "interface.diff-preview": {
+      "status": "yes",
+      "notes": "webview 的 DiffPane/DiffViewer/DiffFileRows 结构化展示逐文件 diff，TUI 的 DiffDisplay 在审批时展示改动，支持折叠与语法高亮。",
+      "evidence": "packages/webview/src/components/DiffPane.tsx\npackages/webview/src/components/DiffViewer.tsx\npackages/webview/src/components/DiffFileRows.tsx\npackages/code/src/components/DiffDisplay.tsx"
+    },
+    "interface.i18n": {
+      "status": "partial",
+      "notes": "仅支持 AI 回复语言（zh-CN/en-US）配置并注入系统提示；界面文案主要为中文硬编码，没有通用 i18n 资源体系。",
+      "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/webview/src/components/SettingsPage.tsx"
+    },
+    "run.headless": {
+      "status": "yes",
+      "notes": "print-cli 支持 -p/print 模式，输出 text、json 或 stream-json（CC 风格事件封套），供脚本与 CI 消费，不含成本字段。",
+      "evidence": "packages/code/src/print-cli.ts\npackages/code/src/utils/printOutput.ts\ndocs/specs/ui/print-mode.md"
+    },
+    "run.sdk": {
+      "status": "yes",
+      "notes": "wave-agent-sdk 以库形式导出 Agent 与各 manager，CLI、四个宿主与远程端均在此基础上构建，可嵌入其他应用与流水线。",
+      "evidence": "packages/agent-sdk/package.json\npackages/agent-sdk/src/agent.ts"
+    },
+    "run.daemon": {
+      "status": "yes",
+      "notes": "daemon 通过 unix socket（~/.wave/daemon.sock）提供 JSON-RPC 常驻服务，多个 CLI/宿主客户端可连接并复用会话。",
+      "evidence": "packages/code/src/daemon/socketPath.ts\npackages/code/src/daemon/commands.ts\npackages/code/src/daemon-cli.ts"
+    },
+    "run.remote-protocol": {
+      "status": "yes",
+      "notes": "定义 stdioProtocol 的 RequestMethod 集合（initialize/sendMessage/rewind/getMcpServers 等）、daemon socket JSON-RPC 与远程控制 WebSocket 中继协议。",
+      "evidence": "packages/agent-sdk/src/types/stdioProtocol.ts\npackages/code/src/daemon/jsonRpcClient.ts\npackages/code/src/remote/relayClient.ts"
+    },
+    "ext.plugins": {
+      "status": "yes",
+      "notes": "插件以 .wave-plugin/plugin.json 清单声明命令、代理、技能、hooks、MCP 与 UI mods；pluginLoader 校验加载，支持 reload-plugins 热重载。",
+      "evidence": "packages/agent-sdk/src/services/pluginLoader.ts\npackages/agent-sdk/src/managers/pluginManager.ts\npackages/agent-sdk/src/mods/runtime.ts\npackages/agent-sdk/src/types/plugins.ts",
+      "detailMd": "插件由 `services/pluginLoader.ts` 发现和校验：约定 `.wave-plugin/plugin.json` 清单，声明 commands、agents、skills、hooks、mcpServers 与 UI mods；加载器解析清单、检查路径与版本、把各资源注册到对应 manager，并支持 reload-plugins 热重载。`managers/pluginManager.ts` 维护启用状态与作用域（用户/项目），pluginScopeManager 处理覆盖。\n\n插件代码不在主进程裸跑：mods 由 `mods/runtime.ts` 放进 Node vm 上下文，冻结原型与全局、仅暴露受控 API（$.tool.register、$.ui、tool.call/check），并用 vm.Script 执行入口，形成轻量沙箱；钩子类插件则通过 hookManager 在 PreToolUse/PostToolUse 等事件调用外部命令。\n\n`types/plugins.ts` 定义清单与安装记录，MarketplaceService 负责来源与安装状态，二者共同构成「清单声明加运行时隔离」的扩展模型。",
+      "detailEvidence": "packages/agent-sdk/src/services/pluginLoader.ts\npackages/agent-sdk/src/managers/pluginManager.ts\npackages/agent-sdk/src/mods/runtime.ts\npackages/agent-sdk/src/types/plugins.ts"
+    },
+    "ext.marketplace": {
+      "status": "yes",
+      "notes": "MarketplaceService 支持 git 市场源、安装/卸载/版本状态与官方镜像，CLI 与 webview 提供市场浏览和安装界面。",
+      "evidence": "packages/agent-sdk/src/services/MarketplaceService.ts\npackages/agent-sdk/src/services/officialMarketplaceMirror.ts\npackages/code/src/components/MarketplaceView.tsx"
+    },
+    "ext.hooks": {
+      "status": "yes",
+      "notes": "hookManager 在 PreToolUse/PostToolUse/SessionStart/PreCompact/PostCompact/Stop 等事件执行用户命令，可阻断工具、注入上下文或要求续跑。",
+      "evidence": "packages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/services/hook.ts"
+    },
+    "ext.skills": {
+      "status": "yes",
+      "notes": "内置技能位于 builtin/skills，用户/插件可通过 SKILL.md 定义技能；skillManager 解析并按需加载，skillTool 调用，列表注入系统提示。",
+      "evidence": "packages/agent-sdk/src/managers/skillManager.ts\npackages/agent-sdk/src/tools/skillTool.ts\npackages/agent-sdk/src/utils/skillListing.ts\npackages/agent-sdk/src/builtin/skills/loop.ts"
+    },
+    "ext.commands": {
+      "status": "yes",
+      "notes": "slashCommandManager 加载用户与插件自定义斜杠命令（提示模板+参数），与内置命令一起在 CLI 命令选择器中呈现。",
+      "evidence": "packages/agent-sdk/src/managers/slashCommandManager.ts\npackages/agent-sdk/src/types/commands.ts\npackages/code/src/components/CommandSelector.tsx"
+    },
+    "ext.plugin-ui": {
+      "status": "yes",
+      "notes": "mods 运行时提供 Box/Text/Button 等 JSX 元素与 ModPanelRenderer，插件可向 TUI/webview 注入面板、消息组件与提示区 UI。",
+      "evidence": "packages/agent-sdk/src/mods/index.ts\npackages/agent-sdk/src/managers/modManager.ts\npackages/agent-sdk/src/types/mods.ts"
+    },
+    "mcp.stdio": {
+      "status": "yes",
+      "notes": "mcpManager 使用 StdioClientTransport 拉起本地 MCP 子进程，经 stdin/stdout JSON-RPC 完成初始化、tools/list 与 tools/call，并捕获 stderr 日志。",
+      "evidence": "packages/agent-sdk/src/managers/mcpManager.ts\npackages/agent-sdk/src/types/mcp.ts\ndocs/specs/ecosystem/mcp.md\npackages/agent-sdk/package.json",
+      "detailMd": "`managers/mcpManager.ts` 基于 @modelcontextprotocol/sdk 统一管理三种传输：StdioClientTransport 启动子进程并通过 stdin/stdout 交换 JSON-RPC，SSEClientTransport 与 StreamableHTTPClientTransport 连接远程端点，三者共用同一套 Client 初始化、工具发现与调用封装。\n\n配置里的 stdio server 记录 command/args/env，管理器负责拉起进程、捕获 stderr 写入日志、在退出时清理；连接采用惰性拨号（beginPendingDials），首次需要工具时才建立，避免启动时阻塞。工具列表按 server 做快照缓存，只有服务器真正失败才丢弃，减少重复 tools/list 往返；每个 server 的 instructions 会被截断并作为公告注入会话。\n\n工具名做命名空间隔离，调用错误转成 tool_result 文本回灌模型，进程崩溃则标记 server 不可用并触发重连或禁用策略。",
+      "detailEvidence": "packages/agent-sdk/src/managers/mcpManager.ts\npackages/agent-sdk/src/types/mcp.ts\npackages/agent-sdk/package.json\ndocs/specs/ecosystem/mcp.md"
+    },
+    "mcp.remote": {
+      "status": "yes",
+      "notes": "同时支持 SSEClientTransport 与 StreamableHTTPClientTransport，远程 server 可配 url 与静态 headers，工具发现与调用和 stdio 共用一套封装。",
+      "evidence": "packages/agent-sdk/src/managers/mcpManager.ts\npackages/agent-sdk/src/types/mcp.ts"
+    },
+    "mcp.oauth": {
+      "status": "no",
+      "notes": "远程 MCP 仅支持配置静态 headers，没有 OAuth 发现、授权码流程或令牌刷新实现。",
+      "evidence": "packages/agent-sdk/src/types/mcp.ts\npackages/agent-sdk/src/managers/mcpManager.ts"
+    },
+    "mcp.resources": {
+      "status": "no",
+      "notes": "只集成 MCP 工具；未调用 resources/list、resources/read、prompts/list，也不处理资源/提示变更通知。",
+      "evidence": "packages/agent-sdk/src/managers/mcpManager.ts"
+    },
+    "agent.subagents": {
+      "status": "yes",
+      "notes": "subagentManager 与 agentTool 派生独立上下文的子代理，内置 Explore/general-purpose/plan/vision，支持自定义 markdown 代理与 /subtask fork。",
+      "evidence": "packages/agent-sdk/src/managers/subagentManager.ts\npackages/agent-sdk/src/tools/agentTool.ts\npackages/agent-sdk/src/builtin/subagents.ts\npackages/agent-sdk/src/utils/subagentParser.ts",
+      "detailMd": "子智能体由 `managers/subagentManager.ts` 统一调度，`tools/agentTool.ts` 暴露给主模型。子代理拥有独立的消息列表、上下文与工具集，启动时创建自己的 aiManager（携带独立的 BackgroundTaskManager、readFileState 与 turnBudget），因此不会污染主会话；结果以最终文本加 usage 的形式回传，父级据此计费。\n\n`builtin/subagents.ts` 定义 Explore、general-purpose、plan、vision 等内置代理：plan 用 model: inherit，vision 指定 visionModel，工具白名单各不相同；用户与插件可在 `.wave/agents` 用 markdown frontmatter 声明自定义子代理，由 utils/subagentParser 解析。\n\nfork 形态（/subtask）会复制起始历史并挂接父级 reversion 状态，普通形态从空上下文开始。并发由 workflow/foreground 任务管理器限制，长任务可转入后台并在完成时通知。",
+      "detailEvidence": "packages/agent-sdk/src/managers/subagentManager.ts\npackages/agent-sdk/src/tools/agentTool.ts\npackages/agent-sdk/src/builtin/subagents.ts\npackages/agent-sdk/src/utils/subagentParser.ts"
+    },
+    "agent.workflows": {
+      "status": "yes",
+      "notes": "workflow 子系统提供脚本运行时、注册表、并发限制与 journal，workflowTool 让模型启动/查询多步骤工作流，CLI 展示运行进度。",
+      "evidence": "packages/agent-sdk/src/workflow/scriptRuntime.ts\npackages/agent-sdk/src/workflow/workflowRegistry.ts\npackages/agent-sdk/src/tools/workflowTool.ts\ndocs/specs/multi-agent/workflow.md"
+    },
+    "agent.background-notify": {
+      "status": "yes",
+      "notes": "后台任务/子代理完成后经通知队列与 notificationXml 注入主会话，CLI 通知面板与 remote 推送提示用户取回结果。",
+      "evidence": "packages/agent-sdk/src/utils/notificationXml.ts\npackages/agent-sdk/src/managers/backgroundTaskManager.ts\npackages/agent-sdk/src/services/hostNotice.ts"
+    },
+    "agent.cron": {
+      "status": "yes",
+      "notes": "cronManager 基于 cron-parser 调度定时任务，提供 CronCreate/List/Delete 工具与租约锁，任务结果回到会话或后台任务系统。",
+      "evidence": "packages/agent-sdk/src/managers/cronManager.ts\npackages/agent-sdk/src/tools/cronCreateTool.ts\npackages/agent-sdk/src/tools/cronListTool.ts"
+    },
+    "agent.remote-control": {
+      "status": "yes",
+      "notes": "remoteControlService 与 relayClient 通过 WebSocket 中继把运行中的 CLI 会话暴露给手机端页面，支持查看、发消息与恢复。",
+      "evidence": "packages/code/src/remote/remoteControlService.ts\npackages/code/src/remote/relayClient.ts\ndocs/specs/remote/remote-control.md"
+    },
+    "agent.ci": {
+      "status": "yes",
+      "notes": "提供可复用的 GitHub Actions 工作流（wave-review.yml，workflow_call）与 GitLab CI 模板，以 headless JSON 输出在 CI 中执行审查。",
+      "evidence": ".github/workflows/wave-review.yml\nci/gitlab-ci.yml\ndocs/specs/automation/ci-integration.md"
+    },
+    "config.layered": {
+      "status": "yes",
+      "notes": "配置按内置默认→用户 ~/.wave/settings.json→项目 .wave/settings.json→.wave/settings.local.json→托管层逐级合并，数组与对象有明确合并规则。",
+      "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/agent-sdk/src/utils/configPaths.ts"
+    },
+    "config.hot-reload": {
+      "status": "yes",
+      "notes": "fileWatcher 监听配置文件变化，liveConfigManager 更新实时配置；每轮开始时 pin 配置快照，保证单轮一致并让下轮生效。",
+      "evidence": "packages/agent-sdk/src/managers/liveConfigManager.ts\npackages/agent-sdk/src/services/fileWatcher.ts"
+    },
+    "config.managed": {
+      "status": "yes",
+      "notes": "remoteSettingsService 拉取组织托管设置（SSO 门控、校验和缓存），按 key 覆盖本地配置，marketplaces/enabledPlugins 等可由组织强制。",
+      "evidence": "packages/agent-sdk/src/services/remoteSettingsService.ts\ndocs/specs/enterprise/server-managed-config.md"
+    },
+    "obs.otel": {
+      "status": "yes",
+      "notes": "telemetry 模块惰性加载 OpenTelemetry SDK，通过 OTLP HTTP 导出指标与日志，支持 otelHeadersHelper，且保护 stdout 不被污染。",
+      "evidence": "packages/agent-sdk/src/telemetry/instrumentation.ts\npackages/agent-sdk/src/telemetry/metrics.ts\npackages/agent-sdk/src/telemetry/events.ts\ndocs/specs/enterprise/opentelemetry.md"
+    },
+    "obs.usage": {
+      "status": "yes",
+      "notes": "usage 回调记录每次请求与压缩的 token，turnBudgetLedger 汇总轮次消耗，CLI usageSummary 与 /context 展示用量与上下文占比。",
+      "evidence": "packages/code/src/utils/usageSummary.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts\npackages/agent-sdk/src/services/contextBreakdown.ts"
+    },
+    "obs.eval": {
+      "status": "no",
+      "notes": "仓库没有官方评测集、回归基准或 eval 运行器；CI 工作流只执行代码审查，不做能力评测。",
+      "evidence": "docs/specs/automation/ci-integration.md\n.github/workflows/wave-review.yml"
+    },
+    "config.enterprise-auth": {
+      "status": "partial",
+      "notes": "具备企业 SSO 登录、组织托管配置与 OTel 审计导出；未发现 SCIM 用户同步或细粒度企业权限管理。",
+      "evidence": "packages/agent-sdk/src/services/authService.ts\npackages/agent-sdk/src/services/remoteSettingsService.ts\ndocs/specs/enterprise/sso-auth.md"
+    }
+  }
+}

@@ -1,0 +1,2636 @@
+{
+  "version": "2026-11-19",
+  "note": "初始基线：按 13 个模块覆盖 codex / opencode / pi / wave-agent 四个 harness 的功能矩阵，并对 12 个核心功能记录实现细节。",
+  "harnesses": [
+    {
+      "slug": "codex",
+      "name": "Codex",
+      "repoUrl": "https://github.com/openai/codex",
+      "branch": "main",
+      "sortOrder": 1,
+      "scheduleMode": "daily",
+      "dailyTime": "09:17",
+      "backfillDays": 30,
+      "enabled": true
+    },
+    {
+      "slug": "opencode",
+      "name": "OpenCode",
+      "repoUrl": "https://github.com/anomalyco/opencode",
+      "branch": "dev",
+      "sortOrder": 2,
+      "scheduleMode": "daily",
+      "dailyTime": "09:17",
+      "backfillDays": 30,
+      "enabled": true
+    },
+    {
+      "slug": "pi",
+      "name": "Pi",
+      "repoUrl": "https://github.com/earendil-works/pi",
+      "branch": "main",
+      "sortOrder": 3,
+      "scheduleMode": "daily",
+      "dailyTime": "09:17",
+      "backfillDays": 30,
+      "enabled": true
+    },
+    {
+      "slug": "wave-agent",
+      "name": "Wave Agent",
+      "repoUrl": "https://github.com/netease-lcap/wave-agent",
+      "branch": "main",
+      "sortOrder": 4,
+      "scheduleMode": "daily",
+      "dailyTime": "09:17",
+      "backfillDays": 30,
+      "enabled": true
+    }
+  ],
+  "features": [
+    {
+      "key": "agent-loop.streaming",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "通过 Responses 流式接口接收事件，session/turn.rs 把增量文本、推理与工具调用实时转发给 TUI、exec 与 app-server，界面边接收边渲染。",
+          "evidence": "codex-rs/core/src/session/turn.rs\ncodex-rs/codex-api/src/common.rs\ncodex-rs/codex-api/src/sse/mod.rs\ncodex-rs/tui/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "模型响应经 @opencode-ai/llm 流式产出 text-delta、reasoning-delta、tool-input 等事件，SessionProcessor 边接收边写入消息 part 并驱动 UI。",
+          "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/llm.ts\npackages/opencode/src/session/llm/ai-sdk.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "模型响应以异步事件流逐段推送，agent-loop 转发 message_update 等增量事件，TUI、JSON 与 RPC 模式按事件实时渲染；thinking 与工具调用参数同样流式输出。",
+          "evidence": "packages/agent/src/agent-loop.ts\npackages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/ai/src/api/anthropic-messages.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "aiService 以流式回调逐块返回文本、推理与工具调用增量，aiManager 分别触发 onContentDelta/onReasoningDelta，CLI 与各宿主按增量渲染而不轮询。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/services/aiService.ts\npackages/agent-sdk/src/types/messaging.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent-loop.tool-call-loop",
+      "overviewMd": "工具调用主循环是 agent 运行时的心脏：模型请求工具、harness 执行并把结果回灌，直到模型给出终态。对比重点在循环终止条件、工具并发粒度、中断与转向、循环防护，以及与上下文压缩的衔接。",
+      "diffSummaryMd": "四家都在会话循环内完成「采样 → 执行 → 回灌」。Codex 由 task 层驱动，ToolOrchestrator 统一审批与沙箱，ToolCallRuntime 按并行度执行；opencode 用 processor 消费 AI SDK 流事件，runLoop 依据 finish 状态续轮，并带 DOOM_LOOP_THRESHOLD 与 SessionRetry 防护；pi 的 runAgentLoop/runLoop 分离内外循环，参数校验、before/after 钩子与顺序/并行执行器齐备，还能把截断的工具参数整批判失败；wave-agent 在 sendAIMessage 中按 isConcurrencySafe 分组，只读工具并行、写工具串行。差异集中在并发粒度与防护：opencode 的循环防护最系统，pi 的钩子与截断处理最细，wave-agent 的只读并行策略最保守。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "回合内循环采样模型、分派工具并把结果回灌，支持并行执行与取消；ToolOrchestrator 统一处理审批与沙箱，直到模型不再请求工具或触发压缩。",
+          "evidence": "codex-rs/core/src/session/turn.rs\ncodex-rs/core/src/tools/router.rs\ncodex-rs/core/src/tools/parallel.rs\ncodex-rs/core/src/tools/orchestrator.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "prompt.ts 的 runLoop 根据 finish 与工具调用状态反复驱动模型；processor 负责 tool-call/tool-result 生命周期，tools.ts 桥接 AI SDK 工具执行与权限询问，支持并行工具调用与中断。",
+          "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/tools.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "runLoop 以内层循环处理工具调用：校验参数、执行 beforeToolCall、顺序或并行运行工具、回灌结果后继续请求模型，直到无工具调用或收到 terminate。",
+          "evidence": "packages/agent/src/agent-loop.ts\npackages/agent/src/agent.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/types.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "sendAIMessage 循环执行「请求模型→执行工具→回灌结果」，只读工具并行、写工具串行，直到无工具调用或达到 maxTurns，支持中断与 hook 阻断。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/toolManager.ts\npackages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/services/aiService.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "Codex 的回合由 task 层驱动：RegularTask::run 建立 TurnContext 并调用 run_turn（core/src/session/turn.rs），后者循环向模型发起 Responses 流式请求，解析 ResponseEvent，并将工具调用交给 ToolRouter 分派。工具执行经 ToolOrchestrator 统一完成审批与沙箱判定，再由 ToolCallRuntime（core/src/tools/parallel.rs）按调用并行度并发执行，支持 CancellationToken 中断；结果以 FunctionCallOutput 追加进历史并再次采样，直到模型不再请求工具。工具清单由 spec_plan.rs 依据模型、审批模式与实验开关注册，规划工具、MCP、code mode 等均在此汇总。循环还会在回合边界排空输入队列实现转向，并在上下文超限时转入压缩后继续。",
+          "evidence": "codex-rs/core/src/tasks/regular.rs\ncodex-rs/core/src/session/turn.rs\ncodex-rs/core/src/tools/parallel.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+        },
+        "opencode": {
+          "detailMd": "工具调用主循环分布在三个文件中。`SessionProcessor.create`（session/processor.ts）消费 LLM 流事件：tool-call 时通过 `ensureToolCall` 创建状态为 pending/running 的 ToolPart，tool-result 时 `completeToolCall` 写回 output、metadata 与 attachments，tool-error 时 `failToolCall`。真正的工具执行在 session/tools.ts，它把 Tool.Def 包装为 AI SDK tool，在 execute 前调用 `permission.ask`，执行后回写 part。上层 `runLoop`（session/prompt.ts）每轮把 MessageV2 转成模型消息并调用 `handle.process`，若 finish 为 tool-calls 或仍存在未完成工具调用则继续下一轮，直到模型给出终态。中断时 `Effect.onInterrupt` 与 cleanup 把未完成工具标记为 interrupted。循环防护包括 `DOOM_LOOP_THRESHOLD=3` 的重复调用检测、agent.steps 最大步数与 SessionRetry 退避重试。",
+          "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/tools.ts\npackages/opencode/src/effect/runner.ts"
+        },
+        "pi": {
+          "detailMd": "核心在 packages/agent/src/agent-loop.ts：runAgentLoop 负责外层回合，runLoop 维护内层工具循环。每轮把会话上下文转成 LLM 消息并调用 streamFn 流式产出 assistant 消息；若 stopReason 为 toolUse，则 prepareToolCall 先用 validateToolArguments 校验参数并调用 beforeToolCall，再按配置走 executeToolCallsSequential 或 executeToolCallsParallel（Promise.all 并发），随后 finalizeExecutedToolCall 执行 afterToolCall 生成 toolResult 回灌。\n\n循环在每次模型调用前轮询 steering 队列，工具结果全部回灌后检查 follow-up 队列；abortSignal 可中止流与工具。若 stopReason=length 导致工具参数被截断，failToolCallsFromTruncatedMessage 会把整批调用标记失败。工具可返回 terminate，shouldTerminateToolBatch 决定提前结束。Agent 类在 agent.ts 中封装队列、abort 与状态。",
+          "evidence": "packages/agent/src/agent-loop.ts\npackages/agent/src/agent.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/types.ts"
+        },
+        "wave-agent": {
+          "detailMd": "主循环位于 `packages/agent-sdk/src/managers/aiManager.ts` 的 `sendAIMessage()`：先固定本轮配置快照，调用 `services/aiService.ts` 发起模型请求，流式回调累积文本、推理与 tool_use 块。收到工具调用后循环交给 `toolManager.execute()`；每次执行前后分别触发 PreToolUse/PostToolUse hook，hook 可阻断调用或改写输入，执行结果（含图片 ingest）回灌为 tool_result 消息，再次请求模型，直到没有新的工具调用或命中 maxTurns。\n\n并发策略按 `isConcurrencySafe` 分组：连续只读工具（Read/Grep/Glob 等）合并成一批用 Promise.all 并行，Edit/Write/MCP 等有副作用工具串行，避免同一文件被并发改写；批次之间保持模型给出的顺序。中断方面 `abortAIMessage()`/`abortTurn(turnId)` 通过 AbortController 结束请求并停止后续批次，已完成的工具结果仍会落盘。每轮输出与压缩等操作计入 `turnBudgetLedger`，供预算与防护判断。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/toolManager.ts\npackages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts"
+        }
+      }
+    },
+    {
+      "key": "agent-loop.steering",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "运行中通过 input_queue 与 thread_input 注入新消息，session/inject.rs 支持插话，回合边界排空队列；TUI 可排队或立即转向。",
+          "evidence": "codex-rs/core/src/session/input_queue.rs\ncodex-rs/core/src/thread_input.rs\ncodex-rs/core/src/session/inject.rs\ncodex-rs/core/src/session/turn.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "运行中可再次提交消息，Runner.ensureRunning 会等待当前 run 结束再执行，TUI 以 QUEUED 标记排队消息；也支持取消中断，但没有真正注入当前流式的转向机制。",
+          "evidence": "packages/opencode/src/effect/runner.ts\npackages/opencode/src/session/run-state.ts\npackages/tui/src/routes/session/index.tsx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "Agent 暴露 steer() 与 followUp() 两个队列，运行中可在工具批次前后插入消息；支持 one-at-a-time/all 两种投递模式，并可用 abort 清空队列。",
+          "evidence": "packages/agent/src/agent.ts\npackages/agent/src/agent-loop.ts\npackages/coding-agent/src/core/agent-session.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "messageQueue/messageManager 维护运行期消息队列，用户插话在下一次请求前注入；若 Stop hook 想续跑但队列中有用户消息，则先结束当前轮让用户消息优先。",
+          "evidence": "packages/agent-sdk/src/managers/messageQueue.ts\npackages/agent-sdk/src/managers/messageManager.ts\npackages/agent-sdk/src/managers/aiManager.ts\npackages/code/src/components/QueuedMessageList.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent-loop.plan-mode",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "Plan 模式注册 update_plan 工具并约束为只读探索，计划项持久化并在 TUI 展示，可在执行模式间切换。",
+          "evidence": "codex-rs/core/src/tools/handlers/plan.rs\ncodex-rs/core/src/tools/handlers/plan_spec.rs\ncodex-rs/core/src/tools/spec_plan.rs\ncodex-rs/tui/src/slash_command.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "内置 plan 主代理（禁用 edit、仅允许计划文件）与 build 代理，reminders 在模式切换时注入 plan/build 系统提示，plan_exit 工具负责确认切换；实验开关控制新版计划文件流程。",
+          "evidence": "packages/opencode/src/agent/agent.ts\npackages/opencode/src/session/reminders.ts\npackages/opencode/src/tool/plan.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "核心不内置计划模式；官方示例扩展 plan-mode 通过禁用 edit/write、把 bash 限制为只读命令并解析 Plan: 步骤实现只读探索，需手动安装扩展。",
+          "evidence": "packages/coding-agent/examples/extensions/plan-mode/index.ts\npackages/coding-agent/examples/extensions/plan-mode/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "具备 plan 权限模式：只读探索、PlanManager 维护计划文件，EnterPlanMode/ExitPlanMode 工具切换，CLI 有 PlanView 展示；压缩后会重新注入计划提醒。",
+          "evidence": "packages/agent-sdk/src/managers/planManager.ts\npackages/agent-sdk/src/tools/enterPlanMode.ts\npackages/agent-sdk/src/tools/exitPlanMode.ts\npackages/code/src/components/PlanView.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent-loop.loop-guard",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "具备 token 预算、自动压缩、取消与超时机制，但未见显式最大轮次计数器或重复工具调用检测。",
+          "evidence": "codex-rs/core/src/session/token_budget.rs\ncodex-rs/core/src/session/context_window.rs\ncodex-rs/core/src/tools/parallel.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "processor 检测最近 3 次同名同参工具调用并触发 doom_loop 权限询问；agent.steps 限制最大步数并注入 MAX_STEPS_PROMPT；SessionRetry 限制 5 次退避重试，支持取消中止。",
+          "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/retry.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "提供 abort 信号与 stopReason=length 时整批工具调用失败保护，但没有最大轮次、成本/Token 预算或重复调用检测等可配置防护。",
+          "evidence": "packages/agent/src/agent-loop.ts\npackages/agent/src/agent.ts\npackages/coding-agent/src/core/settings-manager.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "maxTurns 限制轮次，turnBudgetLedger 按轮记账，连续 3 次输出 token 超限即停止，abortAIMessage/abortTurn 可中止正在执行的请求与批次。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts\npackages/agent-sdk/src/managers/messageQueue.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent-loop.background-tasks",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "unified_exec 支持后台终端与 write_stdin 取回输出，sleep/wait 工具可等待完成，子代理也可在后台运行。",
+          "evidence": "codex-rs/core/src/tools/handlers/unified_exec.rs\ncodex-rs/core/src/unified_exec/mod.rs\ncodex-rs/core/src/tools/handlers/sleep.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "BackgroundJob 服务管理异步任务，task 工具 background=true 启动子代理后台运行并返回 job id，完成后可 promote/wait 取回结果；会话取消时一并取消后台任务。",
+          "evidence": "packages/opencode/src/background/job.ts\npackages/core/src/background-job.ts\npackages/opencode/src/tool/task.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "bash 工具同步执行并支持超时，无后台任务或持久 shell；README 与 usage 明确将 background bash 列为不内置功能，可由扩展自行实现。",
+          "evidence": "packages/coding-agent/src/core/tools/bash.ts\npackages/coding-agent/docs/usage.md\npackages/coding-agent/README.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "Bash/PowerShell 支持后台运行，backgroundTaskManager 与 foregroundTaskManager 管理生命周期，/tasks 与 BackgroundTaskManager 面板查看、取回结果并通知主循环。",
+          "evidence": "packages/agent-sdk/src/managers/backgroundTaskManager.ts\npackages/agent-sdk/src/tools/bashTool.ts\npackages/code/src/components/BackgroundTaskManager.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.file-read",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "无专用 read_file 工具，模型通过 shell 的 cat/sed 读取文件，view_image 处理图片；exec-server 提供内部文件读取但未作为模型工具暴露。",
+          "evidence": "codex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/core/src/tools/handlers/view_image.rs\ncodex-rs/exec-server/src/lib.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "read 工具按 offset/limit 行区间读取，默认 2000 行、单行与总字节截断，识别目录、图片与 PDF，并返回 loaded 文件列表供指令文件作用域判断。",
+          "evidence": "packages/opencode/src/tool/read.ts\npackages/opencode/src/session/instruction.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "read 工具按 path/offset/limit 读取文本，检测图片 MIME 并以图像内容返回；超出字节/行数上限时截断并附提示。",
+          "evidence": "packages/coding-agent/src/core/tools/read.ts\npackages/coding-agent/src/core/tools/truncate.ts\npackages/coding-agent/src/core/tools/index.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "readTool 支持按 offset/limit 行区间读取、空行与大文件截断、图片与二进制识别（toolImageIngest），并把读取状态记入 readFileState 供编辑校验与提醒。",
+          "evidence": "packages/agent-sdk/src/tools/readTool.ts\npackages/agent-sdk/src/utils/toolImageIngest.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.file-edit",
+      "overviewMd": "写入与编辑决定模型改代码的可靠性：新建/覆盖文件，以及基于精确匹配的局部编辑。对比重点在编辑格式、模糊匹配与唯一性校验、并发控制、写入原子性，以及是否强制「先读后改」。",
+      "diffSummaryMd": "Codex 以 freeform apply_patch 为主，流式解析、上下文精确匹配、原子写回，天然支持多文件；opencode 走 oldString/newString 多级模糊匹配器加唯一性校验，按文件加锁、保留 BOM/CRLF、写后跑格式化与 LSP 诊断，并为部分 GPT 模型提供 apply_patch；pi 的 edits[] 批量替换、NFKC/引号归一化模糊匹配、按路径串行；wave-agent 要求先读后改，old_string 唯一匹配、replace_all 显式全替换、临时文件原子写，并检测读取后的文件漂移。四者都做了文件级串行，区别在「先读后改」是否强制（仅 wave-agent 强制）与编辑格式（补丁式 vs 字符串替换）。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "以 apply_patch 为推荐编辑路径：流式解析 freeform 补丁，精确匹配上下文后原子写回，失败返回明确错误供模型重试，并生成 diff 供审批。",
+          "evidence": "codex-rs/core/src/tools/handlers/apply_patch.rs\ncodex-rs/apply-patch/src/lib.rs\ncodex-rs/apply-patch/src/file_update.rs\ncodex-rs/apply-patch/src/streaming_parser.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "edit 以 oldString/newString 精确匹配局部替换，配多层容错匹配器与唯一性校验，按文件加锁并保留 BOM/换行、格式化后回写 LSP 诊断；write 负责整文件写入，二者都经 edit 权限审批。",
+          "evidence": "packages/opencode/src/tool/edit.ts\npackages/opencode/src/tool/write.ts\npackages/opencode/src/tool/tool.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "edit 工具一次性读取原文件，按 edits[].oldText/newText 顺序做唯一匹配替换，支持模糊归一化与按文件串行化；write 负责新建/覆盖。",
+          "evidence": "packages/coding-agent/src/core/tools/edit.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/src/core/tools/file-mutation-queue.ts\npackages/coding-agent/src/core/tools/write.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "Write 整文件写入、Edit 精确 old_string 唯一匹配并支持 replace_all，要求先读后改，采用原子写；两者标记为非并发安全，与其他写工具串行执行。",
+          "evidence": "packages/agent-sdk/src/tools/editTool.ts\npackages/agent-sdk/src/tools/writeTool.ts\npackages/agent-sdk/src/tools/readTool.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "编辑能力以 apply_patch 为核心。模型输出 freeform 补丁文本，ApplyPatchHandler（core/src/tools/handlers/apply_patch.rs）调用 apply-patch crate 的流式解析器 streaming_parser.rs 增量解析，再由 parser.rs 生成 FileUpdate，file_update.rs 校验上下文精确匹配并原子写回。失败（上下文不匹配、文件缺失）会返回明确错误让模型重试；补丁在工具层被转换为统一 diff 供 TUI 展示并进入审批流程。相比逐行字符串替换，补丁格式一次可修改多文件、上下文更稳定，也便于审计与并发控制。shell 工具虽可写文件，但推荐路径仍是 apply_patch。",
+          "evidence": "codex-rs/core/src/tools/handlers/apply_patch.rs\ncodex-rs/apply-patch/src/parser.rs\ncodex-rs/apply-patch/src/file_update.rs\ncodex-rs/apply-patch/src/streaming_parser.rs"
+        },
+        "opencode": {
+          "detailMd": "写入与编辑由 edit.ts 与 write.ts 实现。`EditTool` 接收 filePath/oldString/newString/replaceAll，先经 `assertExternalDirectoryEffect` 做工作区外检查，再调用 `ctx.ask({permission:'edit'})` 附带 diff 元数据审批。核心 `replace()` 依次尝试 Simple、LineTrimmed、BlockAnchor、WhitespaceNormalized、IndentationFlexible、EscapeNormalized、TrimmedBoundary、ContextAware、MultiOccurrence 等 Replacer，用 Levenshtein 相似度阈值处理缩进/空白差异，并拒绝匹配跨度远大于 oldString 的结果；oldString 必须唯一否则报错。每个文件通过 `Semaphore` 锁串行化，写入前读取原文件以保留 BOM 与 CRLF，写后调用 Format 与 LSP `touchFile`/`diagnostics` 并把错误回灌给模型。`WriteTool` 做整文件覆盖。实现不强制“先读后改”，依赖 oldString 精确匹配与权限审批；对部分 GPT 模型会改用 apply_patch 工具。",
+          "evidence": "packages/opencode/src/tool/edit.ts\npackages/opencode/src/tool/write.ts\npackages/opencode/src/tool/apply_patch.ts\npackages/opencode/src/tool/external-directory.ts"
+        },
+        "pi": {
+          "detailMd": "edit 工具定义于 core/tools/edit.ts，schema 为 {path, edits:[{oldText,newText}]}。它一次性读取原文件，在原始内容上按顺序应用所有 edits，要求 oldText 唯一匹配；edit-diff.ts 的 normalizeForFuzzyMatch 会对智能引号、破折号、空白与 NFKC 做归一化后再匹配，降低模型复制偏差。\n\n写回前通过 file-mutation-queue.ts 的 withFileMutationQueue 按文件路径串行化，避免并发工具互相覆盖，同时保持 BOM 与行尾。结果 details 含 firstChangedLine、diff 与 generateUnifiedPatch 生成的 patch，供 TUI 展示。write 工具负责新建/覆盖；read-before-edit 主要靠提示约束，并无强制拦截。",
+          "evidence": "packages/coding-agent/src/core/tools/edit.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/src/core/tools/file-mutation-queue.ts\npackages/coding-agent/src/core/tools/write.ts"
+        },
+        "wave-agent": {
+          "detailMd": "写入由 `tools/writeTool.ts` 与 `tools/editTool.ts` 实现。Write 支持整文件创建/覆盖，并在写前记录 readFileState；Edit 要求先 Read 目标文件（读前校验），用 old_string 做唯一匹配，命中多处即报错，可用 replace_all 显式替换全部；写入采用临时文件加 rename 的原子写，保留文件权限与换行风格。\n\n`isConcurrencySafe` 对两者返回 false，因此在同一批工具调用中强制串行，避免基于同一基线的并发编辑互相覆盖。编辑后会更新 readFileState 基线并生成 changed-files 提醒；若文件在读取后被外部修改，会检测 hash/mtime 漂移并在结果中给出 stale 提示，要求模型重新读取后再改。另有 `utils/fileChangeReminder.ts` 把未读改动注入后续轮次，降低盲改风险。",
+          "evidence": "packages/agent-sdk/src/tools/editTool.ts\npackages/agent-sdk/src/tools/writeTool.ts\npackages/agent-sdk/src/tools/readTool.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts"
+        }
+      }
+    },
+    {
+      "key": "tools.shell",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "shell/unified_exec 执行终端命令，支持 PTY、超时、输出截断、后台会话与 write_stdin 续写。",
+          "evidence": "codex-rs/core/src/tools/handlers/shell_spec.rs\ncodex-rs/core/src/tools/handlers/unified_exec.rs\ncodex-rs/core/src/unified_exec/mod.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "shell 工具用 bash/PowerShell 语法树解析命令，支持超时、输出截断落盘、权限与外部目录扫描、detached 子进程；但每条命令独立执行，没有持久 shell 会话，后台化主要依赖 task/后台任务。",
+          "evidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/arity.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "bash 工具通过子进程执行命令，支持 timeout、流式输出累积与截断；没有持久 shell 会话或后台运行，每次调用相互独立。",
+          "evidence": "packages/coding-agent/src/core/tools/bash.ts\npackages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "bashTool 与 powershellTool 经 shellProvider 解析 shell，支持超时、输出截断、后台运行与工作目录；bashModeManager 提供持久 shell 会话。",
+          "evidence": "packages/agent-sdk/src/tools/bashTool.ts\npackages/agent-sdk/src/tools/powershellTool/powershellTool.ts\npackages/agent-sdk/src/managers/bashModeManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.search",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "无专用 grep/glob 工具，依赖 shell 中的 rg/grep 搜索；TUI 提供模糊文件查找，但工具清单未暴露结构化代码搜索。",
+          "evidence": "codex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/core/src/tools/spec_plan.rs\ncodex-rs/exec-server/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "grep 与 glob 工具基于内嵌 ripgrep 做内容正则搜索和文件名模式匹配，支持 include、路径限制、结果截断与外部目录权限检查。",
+          "evidence": "packages/opencode/src/tool/grep.ts\npackages/opencode/src/tool/glob.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "grep 调用内置或自动下载的 ripgrep，find 按 glob 查找文件名，ls 列目录；结果均受输出截断保护。",
+          "evidence": "packages/coding-agent/src/core/tools/grep.ts\npackages/coding-agent/src/core/tools/find.ts\npackages/coding-agent/src/core/tools/ls.ts\npackages/coding-agent/src/utils/tools-manager.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "grepTool/globTool 基于 ripgrep，支持内容与文件名搜索、glob/type 过滤、结果上限与上下文行；另有 fileIndex/fileSearch 辅助快速索引。",
+          "evidence": "packages/agent-sdk/src/tools/grepTool.ts\npackages/agent-sdk/src/tools/globTool.ts\npackages/agent-sdk/src/utils/searchShell.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.lsp",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "no",
+          "notes": "仓库内未见 LSP 客户端、诊断/定义/引用工具或语言服务器集成，代码理解依赖 shell 搜索与文件读取。",
+          "evidence": "codex-rs/core/src/tools/spec_plan.rs\ncodex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/Cargo.toml"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "LSP 服务持续为 edit/write 提供诊断；单独的 lsp 工具可做定义、引用、hover、符号、调用层级查询，但注册受 experimentalLspTool 开关控制，默认不暴露。",
+          "evidence": "packages/opencode/src/tool/lsp.ts\npackages/opencode/src/lsp/lsp.ts\npackages/opencode/src/lsp/diagnostic.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "未提供 LSP 客户端，也没有诊断、定义、引用等结构化代码工具；仓库中无 language server 集成代码。",
+          "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "lspTool 配合 lspManager 启动/复用语言服务器，向模型提供诊断、定义、引用、符号等结构化查询，并把结果文本化回灌。",
+          "evidence": "packages/agent-sdk/src/tools/lspTool.ts\npackages/agent-sdk/src/managers/lspManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.web",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "内置 web_search 工具，支持搜索、打开页面与页内查找，可配置搜索后端与模式，并受网络策略约束。",
+          "evidence": "codex-rs/core/src/web_search.rs\ncodex-rs/core/src/tools/spec_plan.rs\ncodex-rs/config/src/config_toml.rs\ncodex-rs/network-proxy/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "webfetch 抓取网页并转 markdown/text/html；websearch 通过 Exa 或 Parallel 后端搜索，仅在 opencode provider 或对应实验开关下启用。",
+          "evidence": "packages/opencode/src/tool/webfetch.ts\npackages/opencode/src/tool/websearch.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无内置网页抓取或搜索工具；模型只能通过 bash（如 curl）访问网络，也没有可配置的搜索后端。",
+          "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "partial",
+          "notes": "只有 webFetchTool（抓取 URL、10MB 上限、60 秒超时、LRU 缓存与 HTML 转文本），没有内置 Web 搜索后端或可配置搜索 provider。",
+          "evidence": "packages/agent-sdk/src/tools/webFetchTool.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.ask-user",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "request_user_input 与异步变体存在，但受 experimental_request_user_input_enabled 与协作模式特性开关门控，仅在支持界面启用。",
+          "evidence": "codex-rs/core/src/tools/handlers/request_user_input.rs\ncodex-rs/core/src/tools/handlers/request_user_input_spec.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "question 工具向用户提出结构化多问题并等待回答（Question 服务），在 app/cli/desktop 客户端默认启用，结果回灌给模型继续执行。",
+          "evidence": "packages/opencode/src/tool/question.ts\npackages/opencode/src/question/index.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "核心工具集没有提问工具；示例扩展 question/qna 通过自定义 UI 实现结构化提问并等待回答，需用户安装。",
+          "evidence": "packages/coding-agent/examples/extensions/question.ts\npackages/coding-agent/examples/extensions/qna.ts\npackages/coding-agent/src/core/tools/index.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "askUserQuestion 工具通过 interactionService 向宿主发出结构化问题（选项/多选/自由文本），阻塞等待回答后作为工具结果回灌。",
+          "evidence": "packages/agent-sdk/src/tools/askUserQuestion.ts\npackages/agent-sdk/src/services/interactionService.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.todo",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "update_plan 工具维护任务清单，条目含状态并在 TUI 渲染进度，用于长任务的结构化跟踪。",
+          "evidence": "codex-rs/core/src/tools/handlers/plan.rs\ncodex-rs/core/src/tools/handlers/plan_spec.rs\ncodex-rs/core/src/tools/spec_plan.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "todowrite 工具维护会话级任务清单，经 Todo 服务持久化并在 TUI 展示进度，是计划执行的默认工具。",
+          "evidence": "packages/opencode/src/tool/todo.ts\npackages/opencode/src/session/todo.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "核心不内置 todo 工具；示例扩展 todo.ts 提供 list/add/toggle/clear，并把任务状态保存在工具结果的 details 中。",
+          "evidence": "packages/coding-agent/examples/extensions/todo.ts\npackages/coding-agent/src/core/tools/index.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "TaskCreate/Get/Update/List 工具维护任务清单，taskManager 持久化状态，CLI 的 TaskList 面板实时展示进度，任务提醒会注入后续轮次。",
+          "evidence": "packages/agent-sdk/src/tools/taskManagementTools.ts\npackages/agent-sdk/src/services/taskManager.ts\npackages/code/src/components/TaskList.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.code-mode",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "code mode 让模型在 V8 沙箱中编写脚本组合调用工具，提供 exec/wait 工具减少往返；由 spec_plan 按 ToolMode 注册。",
+          "evidence": "codex-rs/core/src/tools/spec_plan.rs\ncodex-rs/core/src/tools/code_mode/execute_spec.rs\ncodex-rs/code-mode-runtime/src/service.rs\ncodex-rs/code-mode-runtime/src/lib.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "实验性 `execute` 工具让模型编写脚本，在受限解释器中组合调用已连接的 MCP 工具以减少往返；仅当 experimentalCodeMode 开启且存在可见 MCP 工具时注册。",
+          "evidence": "packages/opencode/src/tool/code-mode.ts\npackages/codemode/src/interpreter/runtime.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "未实现让模型编写脚本组合调用工具的 Code Mode；工具只以独立的 function calling 形式暴露。",
+          "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "execTool 在 worker_threads 中运行模型编写的 JS，提供 tools.<name> 与 ToolSearch 等受控 API，不暴露 fs/网络/import，用于脚本化组合工具调用。",
+          "evidence": "packages/agent-sdk/src/tools/execTool.ts\npackages/agent-sdk/src/exec/execRuntime.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.custom",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "支持动态工具、扩展工具与 MCP 工具注册，插件可声明资源与 MCP 服务器，模型可通过 tool_search 发现可用工具。",
+          "evidence": "codex-rs/core/src/tools/handlers/dynamic.rs\ncodex-rs/core/src/tools/handlers/extension_tools.rs\ncodex-rs/core/src/tools/handlers/tool_search.rs\ncodex-rs/plugin/src/manifest.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "用户可在 .opencode/tool(s) 或全局配置目录放置 TS/JS 工具，也可由插件 tool 字段注册；ToolRegistry 动态导入并统一转成带 JSON Schema 的工具定义。",
+          "evidence": "packages/opencode/src/tool/registry.ts\npackages/web/src/content/docs/custom-tools.mdx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "扩展可通过 ExtensionAPI.registerTool 注册 TypeScript 工具，自定义 schema、执行逻辑与渲染，仓库含 dynamic-tools 等示例。",
+          "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/docs/extensions.md\npackages/coding-agent/examples/extensions/dynamic-tools.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "mods 可通过 $.tool.register 注册新工具并声明 check/call，插件清单也可声明工具；注册后进入 toolManager 与模型工具表，参与权限与 hook 流程。",
+          "evidence": "packages/agent-sdk/src/mods/index.ts\npackages/agent-sdk/src/mods/runtime.ts\npackages/agent-sdk/src/managers/toolManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "tools.patch",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "apply_patch 接受统一补丁格式，解析后批量原子应用并返回 diff，是推荐的跨文件批量修改方式。",
+          "evidence": "codex-rs/core/src/tools/handlers/apply_patch.rs\ncodex-rs/apply-patch/src/parser.rs\ncodex-rs/apply-patch/src/file_update.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "apply_patch 工具解析 *** Begin Patch 形式的统一补丁并批量修改文件，生成 diff、触发格式化与 LSP 诊断；对 gpt 系列模型优先于 edit/write 暴露。",
+          "evidence": "packages/opencode/src/tool/apply_patch.ts\npackages/opencode/src/patch"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "没有 apply_patch 或统一 diff 输入工具；edit 仅在结果中生成 patch 供展示，不能按 patch 文本应用改动。",
+          "evidence": "packages/coding-agent/src/core/tools/index.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/README.md"
+        },
+        "wave-agent": {
+          "status": "no",
+          "notes": "没有 apply_patch、统一 diff 或 MultiEdit 工具；批量修改需模型多次调用 Edit/Write（MultiEdit 仅出现在兼容显示逻辑）。",
+          "evidence": "packages/agent-sdk/src/constants/tools.ts\npackages/agent-sdk/src/builtin/plugins.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "permissions.approval-modes",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "AskForApproval 提供 untrusted/on-request/granular/never，并有只读、自动编辑、全权限预设，可在 CLI 与 TUI 切换。",
+          "evidence": "codex-rs/protocol/src/protocol.rs\ncodex-rs/utils/approval-presets/src/lib.rs\ncodex-rs/tui/src/slash_command.rs\ncodex-rs/core/src/tools/approvals.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "提供 allow/ask/deny 规则与 `--auto`（自动批准非 deny 请求）、`--yolo`/`--dangerously-skip-permissions` 等档位，TUI 可切换 auto-approve；plan 代理则以只读权限集实现只读模式。",
+          "evidence": "packages/opencode/src/cli/cmd/run.ts\npackages/opencode/src/agent/agent.ts\npackages/web/src/content/docs/permissions.mdx"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无只读、自动编辑、全自动等审批档位；仅有项目信任（trust.json、--approve）控制是否加载项目资源，不拦截工具调用。",
+          "evidence": "packages/coding-agent/docs/security.md\npackages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/src/cli/args.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "PermissionMode 提供 default、acceptEdits、plan、bypassPermissions、dontAsk 五档，可在 CLI/设置中切换，并可按会话与工具输入动态求值。",
+          "evidence": "packages/agent-sdk/src/types/permissions.ts\npackages/agent-sdk/src/managers/permissionManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "permissions.rule-engine",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "Starlark execpolicy 规则对命令给出 allow/prompt/forbidden 决策，支持分层合并、前缀与正则匹配。",
+          "evidence": "codex-rs/execpolicy/src/policy.rs\ncodex-rs/execpolicy/src/decision.rs\ndocs/execpolicy.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Permission.evaluate 按 permission/pattern 通配匹配，规则集由默认、agent、会话、用户配置逐层 merge，后匹配规则优先，支持 ask/allow/deny 与 ~/$HOME 展开。",
+          "evidence": "packages/opencode/src/permission/index.ts\npackages/opencode/src/agent/agent.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无 allow/ask/deny 规则引擎或分层合并配置；示例 permission-gate 只用硬编码正则对 bash 弹确认，不属于核心能力。",
+          "evidence": "packages/coding-agent/examples/extensions/permission-gate.ts\npackages/coding-agent/examples/extensions/protected-paths.ts\npackages/coding-agent/docs/security.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "permissionManager 支持 Tool(pattern) 形式的 allow/ask/deny 规则（含 Bash/PowerShell 通配与路径规则），按用户/项目/本地/托管多层合并，deny 优先。",
+          "evidence": "packages/agent-sdk/src/managers/permissionManager.ts\npackages/agent-sdk/src/types/permissions.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "permissions.command-analysis",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "shell-command 用 tree-sitter 解析管道、子命令与重定向，提取真实命令供规则引擎与沙箱判定，而非字符串前缀匹配。",
+          "evidence": "codex-rs/shell-command/src/parse_command.rs\ncodex-rs/core/src/safety.rs\ncodex-rs/execpolicy/src/policy.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "shell 工具使用 bash 与 PowerShell 解析器构建命令语法树，识别重定向、命令分隔与子命令，再结合 arity 字典提取“人类可理解命令前缀”用于权限模式匹配，而非简单字符串前缀。",
+          "evidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/arity.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "不解析 shell 命令结构；bash 直接交给 shell 执行，permission-gate 示例也只做正则匹配，无法识别管道、子命令或重定向。",
+          "evidence": "packages/coding-agent/src/core/tools/bash.ts\npackages/coding-agent/docs/security.md\npackages/coding-agent/examples/extensions/permission-gate.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "shellCommandAnalysis 与 powershellStructure 解析管道、子命令、重定向与引号结构，权限判定按叶子命令逐条评估，写重定向会单独提权。",
+          "evidence": "packages/agent-sdk/src/utils/shell/shellCommandAnalysis.ts\npackages/agent-sdk/src/utils/powershellStructure/parseScript.ts\npackages/agent-sdk/src/managers/permissionManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "permissions.outside-workspace",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "沙箱按 cwd 与可写根限制文件访问，越界读写被 Seatbelt/bwrap/Landlock 拒绝，并可经审批申请提权重试。",
+          "evidence": "codex-rs/sandboxing/src/lib.rs\ncodex-rs/sandboxing/src/policy_transforms.rs\ncodex-rs/sandboxing/src/linux.rs\ncodex-rs/sandboxing/src/seatbelt.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "各文件/命令工具调用 assertExternalDirectoryEffect，命中工作区外路径时按 external_directory 规则 ask/allow/deny，默认询问并允许临时/技能等白名单目录。",
+          "evidence": "packages/opencode/src/tool/external-directory.ts\npackages/opencode/src/permission/index.ts\npackages/opencode/src/agent/agent.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "不检测或限制工作区外路径；read/write/edit/bash 以进程权限访问任意路径，安全文档明确这并非沙箱边界。",
+          "evidence": "packages/coding-agent/docs/security.md\npackages/coding-agent/src/core/tools/read.ts\npackages/coding-agent/src/core/tools/edit.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "以 workdir + additionalDirectories 定义安全区，isPathInSafeZone 检测越界读写；越界操作会触发询问或拒绝，/add-dir 可扩展目录。",
+          "evidence": "packages/agent-sdk/src/managers/permissionManager.ts\npackages/agent-sdk/src/types/permissions.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "permissions.sandbox",
+      "overviewMd": "OS 级沙箱借助 Seatbelt、Bubblewrap、Landlock 等内核机制限制进程的文件与网络访问，是审批规则之外的强制边界。对比重点在平台覆盖、文件/网络策略、与审批层的协作方式，以及默认启用程度。",
+      "diffSummaryMd": "Codex 最完整：macOS Seatbelt、Linux bubblewrap + seccomp + Landlock、Windows 受限令牌，SandboxManager 按策略生成，网络走受管代理白名单，沙箱失败再按审批升级；wave-agent 借助 @anthropic-ai/sandbox-runtime 提供 Seatbelt/bubblewrap 与文件/域名白名单，仅支持 macOS/Linux（WSL2），与审批规则解耦成双层防线；pi 核心明确不内置沙箱，官方示例扩展可给 bash 套 Seatbelt/bubblewrap，属于可选加固；opencode 没有内核级沙箱，只有规则审批与工作区外提示。总体隔离强度：Codex > wave-agent > pi（扩展）> opencode。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "跨平台 OS 级沙箱：macOS Seatbelt、Linux bubblewrap+seccomp+Landlock、Windows 受限令牌，统一由 SandboxManager 按策略生成。",
+          "evidence": "codex-rs/sandboxing/src/lib.rs\ncodex-rs/sandboxing/src/seatbelt.rs\ncodex-rs/linux-sandbox/src/lib.rs\ncodex-rs/windows-sandbox-rs/src/lib.rs"
+        },
+        "opencode": {
+          "status": "no",
+          "notes": "仓库未实现 Seatbelt、Bubblewrap、Landlock 等 OS 级沙箱；shell 工具经 CrossSpawn 直接启动子进程，仅靠权限规则与外部目录检查约束，codemode 的“受限解释器”也只是进程内脚本隔离。",
+          "evidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/index.ts\npackages/opencode/src/tool/external-directory.ts\npackages/codemode/src/interpreter/runtime.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "核心无内置沙箱；官方示例扩展 sandbox 基于 @anthropic-ai/sandbox-runtime 为 bash 提供 Seatbelt/bubblewrap 文件与网络限制，另有 gondolin 微 VM 示例。",
+          "evidence": "packages/coding-agent/examples/extensions/sandbox/index.ts\npackages/coding-agent/docs/containerization.md\npackages/coding-agent/examples/extensions/gondolin/index.ts\npackages/coding-agent/docs/security.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "SandboxManager 按平台调用 Seatbelt（macOS）或 bubblewrap（Linux/WSL2），用沙箱包装工具命令，配合文件与网络白名单；Windows 不支持。",
+          "evidence": "packages/agent-sdk/src/sandbox/SandboxManager.ts\npackages/agent-sdk/src/sandbox/runtimeConfig.ts\ndocs/specs/core/bash-sandbox.md"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "沙箱由 sandboxing crate 统一抽象：SandboxManager 依据 SandboxPolicy 生成平台策略。macOS 使用 seatbelt.rs 生成 SBPL 配置，限制文件写与网络；Linux 由 linux.rs 组装 bubblewrap 挂载命名空间，并在 linux-sandbox 中叠加 seccomp 过滤与 Landlock；Windows 使用 windows-sandbox-rs 的受限令牌或提权模式。policy_transforms.rs 将审批决策映射为沙箱参数，core/src/safety.rs 负责判定命令是否需要提权。网络侧由 network-proxy 提供受管代理与域名白名单。工具执行时 ToolOrchestrator 先沙箱运行，若因权限失败再按审批策略申请升级重试，实现默认安全与可用性的平衡。",
+          "evidence": "codex-rs/sandboxing/src/lib.rs\ncodex-rs/sandboxing/src/seatbelt.rs\ncodex-rs/linux-sandbox/src/lib.rs\ncodex-rs/windows-sandbox-rs/src/lib.rs"
+        },
+        "opencode": {
+          "detailMd": "该仓库没有 OS 级沙箱实现。`tool/shell.ts` 通过 `ChildProcess.make` 与 `CrossSpawnSpawner` 直接以当前用户身份启动 shell 子进程，仅设置 cwd、env、`TERM=dumb`、stdin ignore 与超时，没有 sandbox-exec/Seatbelt、bwrap/Bubblewrap、Landlock 或 seccomp 封装；`permission/index.ts` 只在逻辑层做 ruleset 求值与弹窗审批，`tool/external-directory.ts` 只对路径做工作区外提示，二者都不限制进程的实际文件/网络能力。codemode 包的 `interpreter/runtime.ts` 提供的是脚本能力收敛（只暴露编排与 MCP 调用），仍运行在同一进程，不是内核隔离。企业场景仅通过 MDM 托管配置与 provider 策略做组织约束。因此分类为 no：存在审批与边界提示，但缺少真正的内核级文件/网络沙箱。",
+          "evidence": "packages/opencode/src/tool/shell.ts\npackages/opencode/src/permission/index.ts\npackages/opencode/src/tool/external-directory.ts\npackages/codemode/src/interpreter/runtime.ts"
+        },
+        "pi": {
+          "detailMd": "Pi 核心明确不内置沙箱（docs/security.md 的 “No Built-in Sandbox”）；内置 read/write/edit/bash 以 pi 进程权限运行，项目信任只负责资源加载。官方 examples/extensions/sandbox 通过 @anthropic-ai/sandbox-runtime 为 bash 提供 OS 级隔离：macOS 用 sandbox-exec/Seatbelt，Linux 用 bubblewrap，并按 sandbox.json 的 filesystem.denyRead/allowWrite/denyWrite 与 network.allowedDomains/deniedDomains 生成策略。\n\n该扩展用 createBashTool 与自定义 BashOperations 覆盖内置 bash，全局与项目 sandbox.json 深度合并，提供 --no-sandbox 与 /sandbox 开关；其他工具不受保护。另一个 gondolin 示例把内置工具路由进微 VM。两者均为示例而非默认启用，因此整体只算部分支持。",
+          "evidence": "packages/coding-agent/examples/extensions/sandbox/index.ts\npackages/coding-agent/docs/containerization.md\npackages/coding-agent/examples/extensions/gondolin/index.ts\npackages/coding-agent/docs/security.md"
+        },
+        "wave-agent": {
+          "detailMd": "`sandbox/SandboxManager.ts` 惰性加载 `@anthropic-ai/sandbox-runtime`，按平台选择后端：macOS 用 sandbox-exec/Seatbelt，Linux 用 bubblewrap 并配合代理，明确只支持 WSL2、不支持原生 Windows；缺少 bwrap/socat/rg 时降级为不可用并提示。\n\n`sandbox/runtimeConfig.ts` 的 `buildSandboxRuntimeConfig` 把权限上下文翻译为运行时配置：filesystem 的 denyRead/allowRead/allowWrite/denyWrite 以安全区（workdir 加 additionalDirectories）为基准，network 通过 allowedDomains/deniedDomains 控制出站域名；excludedCommands 允许指定命令绕过沙箱。\n\n沙箱与审批层解耦：`permissionManager` 仍先做规则/模式判定，只有需要执行的命令才交给沙箱包装，命令失败或被拒时回退到常规审批而不是静默放行；临时目录与代理端口由 getSandboxTempDir 管理。整体是「OS 内核隔离加规则引擎」双层防线。",
+          "evidence": "packages/agent-sdk/src/sandbox/SandboxManager.ts\npackages/agent-sdk/src/sandbox/runtimeConfig.ts\npackages/agent-sdk/src/managers/permissionManager.ts\ndocs/specs/core/bash-sandbox.md"
+        }
+      }
+    },
+    {
+      "key": "permissions.network",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "沙箱默认禁网，network-proxy 提供受管代理与域名白名单，审批后可放行特定网络请求。",
+          "evidence": "codex-rs/network-proxy/src/lib.rs\ncodex-rs/sandboxing/src/seatbelt.rs\ncodex-rs/sandboxing/src/linux.rs\ncodex-rs/sandboxing/src/lib.rs"
+        },
+        "opencode": {
+          "status": "no",
+          "notes": "没有工具级网络白名单或隔离机制；仅支持 HTTPS_PROXY/HTTP_PROXY 等标准代理环境变量与自定义证书，webfetch 通过 webfetch 权限询问但不对目标域名做策略控制。",
+          "evidence": "packages/web/src/content/docs/network.mdx\npackages/opencode/src/tool/webfetch.ts\npackages/opencode/src/provider/provider.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "核心无网络访问策略；sandbox 示例扩展可为受沙箱的 bash 配置 allowedDomains/deniedDomains，默认未启用。",
+          "evidence": "packages/coding-agent/examples/extensions/sandbox/index.ts\npackages/coding-agent/docs/containerization.md"
+        },
+        "wave-agent": {
+          "status": "partial",
+          "notes": "网络策略只存在于 OS 沙箱配置（allowedDomains/deniedDomains）；沙箱不可用或命令被排除时，没有独立的代理/白名单层。",
+          "evidence": "packages/agent-sdk/src/sandbox/runtimeConfig.ts\npackages/agent-sdk/src/sandbox/SandboxManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "permissions.persistence",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "审批决定可在会话内缓存并复用（含预批准），减少重复确认，同时支持通过策略与请求工具调整或撤销。",
+          "evidence": "codex-rs/core/src/tools/approvals.rs\ncodex-rs/core/src/tools/handlers/request_permissions.rs\ncodex-rs/protocol/src/protocol.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "回复“always”会把规则加入当前实例内存中的 approved 列表并自动放行同会话后续匹配请求，但不会落盘跨重启保存，也没有集中查看/撤销的审批记忆管理。",
+          "evidence": "packages/opencode/src/permission/index.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "不记忆工具审批决定；唯一持久化的是按目录保存的项目信任（trust.json），没有允许/拒绝的审批记忆或撤销机制。",
+          "evidence": "packages/coding-agent/docs/security.md\npackages/coding-agent/src/core/trust-manager.ts\npackages/coding-agent/src/core/settings-manager.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "审批选择可展开为持久规则写入项目 settings.local.json（如 Bash(git status*)），下次匹配直接放行；支持手工撤销与按 shell 叶子展开。",
+          "evidence": "packages/agent-sdk/src/managers/permissionManager.ts\npackages/agent-sdk/src/utils/configPaths.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "context.system-prompt",
+      "overviewMd": "系统提示按模型、模式与环境动态拼装，决定工具使用规范与项目上下文。对比重点在模板选择策略、动态注入内容、缓存友好的分层方式，以及扩展覆盖点。",
+      "diffSummaryMd": "四家都采用「稳定前缀 + 动态环境」以命中 prompt cache。Codex 用 include_str! 打包模型专用模板，按模型与能力选择并注入 AGENTS.md、时间提醒，TUI/exec/app-server 共享同一构造路径；opencode 按 model.api.id 选择 anthropic/gpt/gemini/kimi 等模板，动态注入环境、git 状态、技能清单与 MCP 说明，插件可通过 system.transform 覆盖；pi 的 buildSystemPrompt 汇总人设、工具 snippet/guidelines、技能 XML、项目上下文与 SYSTEM.md/追加提示，工具集变化时重建；wave-agent 以命名 section 组织并显式标注 shared/session 缓存边界，默认启用精简提示档。差异在模板颗粒度与扩展点：opencode 的模型专属模板最多，wave-agent 的缓存边界最显式，pi 的追加机制最灵活。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "按模型与环境分层拼装提示：模型模板、工具说明、AGENTS.md、时间与环境提醒动态组合，静态前缀利于缓存。",
+          "evidence": "codex-rs/prompts/src/lib.rs\ncodex-rs/core/gpt-5.2-codex_prompt.md\ncodex-rs/core/src/context/base_instructions.rs\ncodex-rs/core/src/session/turn_context.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "system.ts 按模型 api id 选择 anthropic/gpt/gemini/kimi 等专用提示词，动态注入模型 ID、工作目录、git 状态、日期、项目引用、技能清单与 MCP 说明；prompt.ts 负责最终拼装。",
+          "evidence": "packages/opencode/src/session/system.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/prompt/anthropic.txt"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "buildSystemPrompt 按当前工具集、模型、模式拼装人设、工具 snippet/guidelines、技能 XML、项目上下文与 cwd，并支持 SYSTEM.md 与追加提示。",
+          "evidence": "packages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/harness/system-prompt.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "buildSystemPromptSections 按命名 section（身份、安全、工具、环境、记忆、语言等）拼装，shared/session 分层形成缓存边界，默认启用精简提示档。",
+          "evidence": "packages/agent-sdk/src/prompts/index.ts\npackages/agent-sdk/src/services/leanPrompt.ts\npackages/agent-sdk/src/managers/aiManager.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "系统提示按模型与环境分层拼装。prompts crate 以 include_str! 打包各模型模板（如 core/gpt-5.2-codex_prompt.md），prompts/src/lib.rs 负责选择基础模板并注入工具说明。core/src/context 下 base_instructions.rs、model_instructions.rs 处理模型覆盖，user_instructions.rs 注入 AGENTS.md，current_time_reminder.rs 追加时间与环境提醒。session/turn_context.rs 汇总 cwd、审批模式、sandbox 与模型能力并生成 TurnContext。提示由静态前缀加动态片段组成，以提升 prompt cache 命中；TUI、exec、app-server 共享同一构造路径，保证不同运行方式行为一致。",
+          "evidence": "codex-rs/prompts/src/lib.rs\ncodex-rs/core/src/context/base_instructions.rs\ncodex-rs/core/src/context/model_instructions.rs\ncodex-rs/core/src/session/turn_context.rs"
+        },
+        "opencode": {
+          "detailMd": "系统提示由 session/system.ts 与 session/prompt.ts 协作构建。`SystemPrompt.provider(model)` 依据 `model.api.id` 选择专属提示词模板（anthropic.txt、gpt.txt、codex.txt、gemini.txt、kimi.txt、beast.txt、meta.txt、trinity.txt、default.txt），例如 claude 走 Anthropic、gpt-4/o1/o3 走 beast。`environment()` 动态拼出模型名与 provider/model ID、工作目录、worktree 根、是否 git 仓库、平台、当天日期，并列出带 description 的项目 references。`skills(agent)` 按权限过滤后输出 verbose 技能清单，`mcp(agent)` 输出各 MCP server 的 instructions。runLoop 中把 env、instruction.system()（AGENTS.md 等）、mcp、skills 按序组成 system 数组，结构化输出时再追加专用提示。另有 agent.prompt、config.system 与插件 `experimental.chat.system.transform` 可覆盖。",
+          "evidence": "packages/opencode/src/session/system.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/session/instruction.ts\npackages/opencode/src/session/prompt/default.txt"
+        },
+        "pi": {
+          "detailMd": "系统提示由 coding-agent 的 core/system-prompt.ts 中 buildSystemPrompt 拼装：基础人设与工具列表、每个工具的 promptSnippets/promptGuidelines、技能 XML、cwd、项目上下文文件，以及可选的自定义/追加提示。agent-session.ts 的 _rebuildSystemPrompt 在工具集变化时收集各工具片段，并从 ResourceLoader 读取 SYSTEM.md、APPEND_SYSTEM.md、AGENTS 文件与 skills。\n\nharness 侧 packages/agent/src/harness/system-prompt.ts 提供 formatSkillsForSystemPrompt 等通用片段。提示在模型或工具变化时重建，扩展可通过 before_agent_start 或 context 事件修改。",
+          "evidence": "packages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/harness/system-prompt.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "detailMd": "系统提示由 `prompts/index.ts` 的 `buildSystemPromptSections()` 生成，再经 `buildSystemPromptBlocks()` 切成带缓存边界的块。提示按命名 section 组织：identity、security、url-guard、system、doing-tasks、executing-actions、tools、tone 或 lean harness、language、env、memory 等，每个 section 标注 shared 或 session 作用域；shared 部分（身份、安全、工具使用规范）放在稳定前缀以复用 prompt cache，session 部分（环境、目录、记忆、语言）逐轮可变。\n\n`services/leanPrompt.ts` 的 LEAN_PROMPT_DEFAULT_ENABLED 默认开启精简档，用更短的 harness 指令替代完整 doing-tasks/executing-actions，可配置。构建时还会合并工具 schema、技能列表、AGENTS.md 记忆、当前模式（plan）与模型能力（vision/缓存）等输入；`resolveSystemPromptOptions()` 负责解析调用方覆盖项，`buildMainSystemPrompt()` 在压缩、子代理等路径复用同一套 section 逻辑，保证 fork 请求前缀与主循环一致。",
+          "evidence": "packages/agent-sdk/src/prompts/index.ts\npackages/agent-sdk/src/services/leanPrompt.ts\npackages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/prompts/planModeReminders.ts"
+        }
+      }
+    },
+    {
+      "key": "context.instructions",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "加载 AGENTS.md 与 AGENTS.override.md 层级并注入，受 project_doc_max_bytes 限制，同时支持用户级指令文件。",
+          "evidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/core/src/context/user_instructions.rs\ndocs/agents_md.md\ncodex-rs/core/src/session/turn_context.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Instruction 服务加载全局 ~/.config/opencode/AGENTS.md 与 ~/.claude/CLAUDE.md，以及首个匹配的项目 AGENTS.md/CLAUDE.md/CONTEXT.md，并支持 config.instructions 的 glob/URL；读取文件时还会向上附加最近目录说明。",
+          "evidence": "packages/opencode/src/session/instruction.ts\npackages/web/src/content/docs/rules.mdx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "ResourceLoader 从全局 agent 目录、祖先目录与 cwd 依次加载 AGENTS.override.md、AGENTS.md、CLAUDE.md，并以 project_context 块注入系统提示。",
+          "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "按工作目录读取 AGENTS.md（回退 CLAUDE.md），支持 @include、用户级 ~/.wave/AGENTS.md，并在 Read 访问子目录时按需注入嵌套指令文件。",
+          "evidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/utils/nestedMemory.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "context.epochs",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "以压缩边界重建上下文窗口并替换历史，但没有显式的 epoch 数据结构或跨纪元状态管理。",
+          "evidence": "codex-rs/core/src/compact.rs\ncodex-rs/core/src/session/context_window.rs\ncodex-rs/core/src/context_manager/history.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "core/session/context-epoch.ts 以基线快照与序号记录上下文纪元，压缩产生更高 seq 时替换基线并重新注入系统上下文快照，支持初始化阻塞与解码错误处理。",
+          "evidence": "packages/core/src/session/context-epoch.ts\npackages/core/src/session/sql.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "以压缩条目为边界构建会话上下文，只保留最近压缩及其后条目；harness 的 compaction 还记录 retainedTail，但没有显式 epoch 命名或多纪元管理 API。",
+          "evidence": "packages/agent/src/harness/session/context.ts\npackages/agent/src/harness/session/types.ts\npackages/coding-agent/src/core/compaction/compaction.ts"
+        },
+        "wave-agent": {
+          "status": "no",
+          "notes": "没有显式的上下文纪元模型；压缩是一次性摘要替换并清空 readFileState，未以 epoch 管理多代历史与重注入。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\ndocs/specs/core/message-compact.md"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "context.token-accounting",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "按模型统计上下文 token 与剩余额度，驱动压缩阈值、get_context_remaining 工具与状态栏展示。",
+          "evidence": "codex-rs/core/src/session/context_window.rs\ncodex-rs/core/src/session/token_budget.rs\ncodex-rs/core/src/tools/handlers/get_context_remaining.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "每个 step 通过 Session.getUsage 汇总 input/output/reasoning/cache 与费用写入消息，Token.estimate 估算历史体积，overflow.ts 依据模型 limit 与预留输出计算可用额度并驱动压缩。",
+          "evidence": "packages/opencode/src/session/overflow.ts\npackages/opencode/src/session/session.ts\npackages/opencode/src/util/token.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "getContextUsage 按模型 contextWindow 估算 token 与百分比并在 footer 展示；usage-totals 汇总输入/输出/缓存 token 与费用。",
+          "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/src/modes/interactive/components/footer.ts\npackages/coding-agent/src/core/usage-totals.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "estimateContextTokens/getAutoCompactThreshold 估算上下文占用，usage 回调与 turnBudgetLedger 记录 token，/context 输出分项明细。",
+          "evidence": "packages/agent-sdk/src/utils/tokenCalculation.ts\npackages/agent-sdk/src/services/contextBreakdown.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "context.compaction",
+      "overviewMd": "上下文接近上限时自动摘要历史并继续任务，是长会话可用性的关键。对比重点在触发估算、保留策略（保留多少尾部、如何修剪工具输出）、摘要结构与写回方式，以及失败与溢出兜底。",
+      "diffSummaryMd": "Codex 有本地摘要与服务端远程压缩两条路径，保留用户目标与近期消息，压缩前后触发 PreCompact/PostCompact 钩子，仍溢出时裁剪重试；opencode 在 compaction.ts 中按 turn 估算保留尾部、修剪旧工具输出，生成摘要消息与 compaction part，插件可注入 context/prompt，支持自动续跑；pi 以 contextWindow − reserveTokens 触发，keepRecentTokens 找切点，输出 Goal/Progress/Next Steps 等结构化摘要写入 CompactionEntry，溢出时 compact-and-retry；wave-agent 复用主循环 prompt fork 压缩回合以命中缓存，写回前校验会话未切换，连续失败 3 次触发断路器。四家都保留近期尾部，差异在触发估算、摘要结构与安全护栏。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "接近上限时自动摘要历史：本地压缩与服务端远程压缩两条路径，保留目标与近期消息后重建上下文继续任务。",
+          "evidence": "codex-rs/core/src/compact.rs\ncodex-rs/core/src/compact_remote_v2.rs\ncodex-rs/core/src/session/turn.rs\ncodex-rs/prompts/templates/compact/prompt.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "compaction.ts 在溢出时按 turn 选择保留尾部预算、截断旧工具输出，调用 compaction 代理生成摘要型 assistant 消息并写入 compaction part，可自动续跑；prune 则主动清理旧工具结果释放上下文。",
+          "evidence": "packages/opencode/src/session/compaction.ts\npackages/opencode/src/session/overflow.ts\npackages/core/src/session/compaction.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "当估算上下文超过 window 减 reserveTokens 时触发压缩：按 keepRecentTokens 找切点、生成结构化摘要并写入 CompactionEntry，保留最近消息继续任务。",
+          "evidence": "packages/coding-agent/src/core/compaction/compaction.ts\npackages/agent/src/harness/compaction/compaction.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/compaction.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "请求前按阈值自动压缩，或 /compact 手动触发；复用主循环 prompt 的 fork 生成摘要，写回前校验会话未切换，失败 3 次触发断路器。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/utils/tokenCalculation.ts\npackages/agent-sdk/src/services/contentSummarizer.ts\ndocs/specs/core/message-compact.md"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "压缩在 session/turn.rs 的回合循环中触发：context_window.rs 统计 token，低于阈值时由 token_budget 标记需要压缩。compact.rs 走本地摘要（调用 compact 模板要求模型输出摘要），compact_remote_v2.rs 则请求服务端压缩并替换历史；二者都保留用户目标、最近消息与关键工具结果。压缩前触发 PreCompact hook，压缩后触发 PostCompact，允许插件注入或改写摘要。压缩完成后重建上下文窗口并继续当前任务；若请求仍溢出，responses_retry.rs 负责裁剪与重试。压缩模型可单独配置，以控制成本与质量。",
+          "evidence": "codex-rs/core/src/compact.rs\ncodex-rs/core/src/compact_remote_v2.rs\ncodex-rs/core/src/session/context_window.rs\ncodex-rs/prompts/templates/compact/prompt.md"
+        },
+        "opencode": {
+          "detailMd": "自动压缩核心在 session/compaction.ts。`isOverflow` 委托 overflow.ts 的 `usable()`：以模型 context/input limit 减去预留输出（默认 min(20k, maxOutput)）得到可用额度，tokens 超过即溢出。`select()` 从最新 turn 向前按 `preserve_recent_tokens` 预算估算保留尾部，必要时 `splitTurn` 在同 turn 内切分；`prune()` 从后向前累计工具输出，超过 PRUNE_PROTECT 后把更老结果标记 compacted，仅在释放量超过 PRUNE_MINIMUM 时生效。`process()` 生成 compaction 专用的 summary assistant 消息，system 为空、tools 为空，用 core/buildPrompt 结合上一版摘要与序列化历史构造提示，插件可通过 `experimental.session.compacting` 注入 context 或替换 prompt。溢出错误路径会剥离媒体并重放最近用户消息，可选 `experimental.compaction.autocontinue` 自动续跑。processor 在 step-finish 时检测溢出并置 needsCompaction。",
+          "evidence": "packages/opencode/src/session/compaction.ts\npackages/opencode/src/session/overflow.ts\npackages/core/src/session/compaction.ts\npackages/opencode/src/session/processor.ts"
+        },
+        "pi": {
+          "detailMd": "压缩实现位于 core/compaction/compaction.ts 与 harness/compaction/compaction.ts。shouldCompact 在估算 contextTokens > contextWindow - reserveTokens（默认 16384）时触发；findCutPoint 以 keepRecentTokens（默认 20000）从尾部回退，必要时拆分 turn，保证保留最近的用户/助手交互。\n\nprepareCompaction 汇总待压缩条目，generateSummary 调用当前模型生成结构化摘要（Goal/Constraints/Progress/Decisions/Next Steps 等），compact 写入 CompactionEntry，记录 firstKeptEntryId 与 retainedTail。agent-session.ts 的 _runAutoCompaction 在回合前检查并执行；上下文重建时只保留最近压缩及其后条目。溢出时还会 compact-and-retry 一次。",
+          "evidence": "packages/coding-agent/src/core/compaction/compaction.ts\npackages/agent/src/harness/compaction/compaction.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/compaction.md"
+        },
+        "wave-agent": {
+          "detailMd": "压缩入口是 `aiManager.compactConversation()`，由 `/compact`（manual）或请求前阈值 `maybeAutoCompactBeforeRequest()`（auto）触发。阈值来自 `utils/tokenCalculation.ts` 的 estimateContextTokens/getAutoCompactThreshold：以最近一条带 usage 的消息为锚估算上下文占比，超过阈值即压缩。\n\n压缩不另起模型，而是复用主循环的 system prompt、工具与生成参数 fork 一个压缩回合（runCompactFork），使请求前缀命中 prompt cache；提示要求模型输出 analysis 与 summary，formatCompactSummary 去掉草稿只保留摘要，再由 buildPostCompactContext 重新注入计划模式提醒、文件状态等恢复信息。\n\n写回前校验 sessionId 未切换，避免摘要写进用户刚切到的会话；成功后清空 readFileState 并重置连续失败计数。连续失败 3 次触发断路器停止自动压缩；PreCompact/PostCompact hook 与 mods 的 classic.PreCompact/session.compact 事件在前后提供扩展点。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/utils/tokenCalculation.ts\npackages/agent-sdk/src/services/contentSummarizer.ts\ndocs/specs/core/message-compact.md"
+        }
+      }
+    },
+    {
+      "key": "context.compaction-hooks",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "hooks 系统提供 PreCompact/PostCompact 事件，可在压缩前后执行自定义逻辑并注入或改写摘要。",
+          "evidence": "codex-rs/hooks/src/lib.rs\ncodex-rs/core/src/hook_runtime.rs\ncodex-rs/core/src/compact.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "压缩流程暴露 experimental.session.compacting（注入 context/替换 prompt）、experimental.chat.messages.transform 与 experimental.compaction.autocontinue 插件钩子，允许插件定制摘要输入与是否续跑。",
+          "evidence": "packages/opencode/src/session/compaction.ts\npackages/opencode/src/plugin/index.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "扩展可监听 session_before_compact 与 session_before_tree，返回自定义摘要或取消；示例 custom-compaction 演示替换压缩逻辑。",
+          "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/examples/extensions/custom-compaction.ts\npackages/coding-agent/docs/compaction.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "PreCompact/PostCompact hook 可在压缩前注入 additionalInstructions、压缩后处理；mods 另有 classic.PreCompact/session.compact 影子事件。",
+          "evidence": "packages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/managers/aiManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "context.overflow-recovery",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "请求超限时 responses_retry 裁剪历史并重试，必要时触发压缩或降级，避免回合直接失败。",
+          "evidence": "codex-rs/core/src/responses_retry.rs\ncodex-rs/core/src/compact.rs\ncodex-rs/core/src/session/context_window.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "ContextOverflowError 时若未禁用 auto compaction 则进入压缩并重试，溢出场景会去除媒体附件、重放最后用户消息；另有请求级 SessionRetry 退避与工具输出 prune 作为降级路径。",
+          "evidence": "packages/opencode/src/session/processor.ts\npackages/opencode/src/session/overflow.ts\npackages/opencode/src/session/compaction.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "识别 context overflow 后触发一次压缩并重试当前请求，失败则报错；没有多级裁剪或降级备用模型路径。",
+          "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/ai/src/utils/overflow.ts\npackages/coding-agent/src/core/compaction/compaction.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "请求前自动压缩与输出 token 连续超限恢复（3 次）构成主路径，超限时重规划并裁剪；请求失败计入预算后结束当前轮而非无限重试。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/utils/tokenCalculation.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "context.reminders",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "在长任务中注入当前时间、计划状态与工具使用约束等动态提醒，并随上下文刷新。",
+          "evidence": "codex-rs/core/src/context/current_time_reminder.rs\ncodex-rs/core/src/context_manager/history.rs\ncodex-rs/core/gpt-5.2-codex_prompt.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "SessionReminders.apply 在构建消息时注入 plan 模式提示、plan→build 切换提示、计划文件位置说明等合成文本，实现长任务中的运行时提醒。",
+          "evidence": "packages/opencode/src/session/reminders.ts\npackages/opencode/src/session/prompt/plan-mode.txt"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无运行时动态提醒注入；系统提示中的工具指南与 AGENTS 文件均为静态内容，长任务中不会追加计划或约束提醒。",
+          "evidence": "packages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "taskReminder、fileChangeReminder、planModeReminders 在长任务中注入待办、未读文件变更与计划模式约束，压缩后也会重新挂载计划提醒。",
+          "evidence": "packages/agent-sdk/src/utils/taskReminder.ts\npackages/agent-sdk/src/utils/fileChangeReminder.ts\npackages/agent-sdk/src/prompts/planModeReminders.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "memory.project",
+      "overviewMd": "项目记忆让 agent 跨会话复用项目知识。对比重点在存储载体（指令文件/记忆库）、加载作用域与层级、自动写入能力，以及上下文占用控制。",
+      "diffSummaryMd": "Codex 以 AGENTS.md/AGENTS.override.md 向上发现合并为主，另有 memories 子系统自动提炼补足；opencode 只有指令文件机制（全局 + findUp 首个命中）并注入系统提示，只读不写，故为 partial；pi 从 cwd 向上收集 AGENTS.override/AGENTS/CLAUDE，去重后注入，无自动写入或检索；wave-agent 分三层：项目 AGENTS.md（@include 递归，64KB/512KB 限额）、Read 时按目录注入嵌套记忆、.wave/rules 路径规则，再加会话结束时的受限自动记忆回合。层次与自动化程度 wave-agent 最完整，Codex 有自动记忆补足，pi 稳定但纯静态，opencode 最简。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "项目记忆以 AGENTS.md 层级为主：从 cwd 向上发现并合并 AGENTS.md/AGENTS.override.md，受大小限制后注入提示，另有自动记忆管线作为补充。",
+          "evidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/core/src/context/user_instructions.rs\ndocs/agents_md.md\ncodex-rs/memories/README.md"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "没有独立的项目记忆库；跨会话项目知识依赖 Instruction 服务加载的 AGENTS.md/CLAUDE.md/CONTEXT.md 并以 globUp 向上查找，注入系统提示，但无自动写入、去重或检索。",
+          "evidence": "packages/opencode/src/session/instruction.ts\npackages/web/src/content/docs/rules.mdx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "项目记忆由 AGENTS.md/CLAUDE.md 指令文件实现，随仓库持久化并在每次会话注入系统提示；无自动写入或检索。",
+          "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "项目根 AGENTS.md/CLAUDE.md 作为持久项目记忆加载，支持 @include 与 64KB/512KB 限额；嵌套目录记忆按 Read 访问路径注入。",
+          "evidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/utils/nestedMemory.ts\npackages/agent-sdk/src/managers/MemoryRuleManager.ts\npackages/agent-sdk/src/services/autoMemoryService.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "项目记忆主要通过 AGENTS.md 体系实现。core/src/agents_md.rs 从 cwd 向上逐级发现 AGENTS.md 与 AGENTS.override.md，受 project_doc_max_bytes 限制，合并后由 user_instructions.rs 注入系统提示；用户级 ~/.codex/AGENTS.md 也会加载。该机制无向量检索，靠分层文件与就近覆盖实现作用域，简单可预测。另有 memories 子系统做跨会话自动记忆：write 阶段从 rollout 提炼，read 阶段按需检索注入。项目知识因此分为显式指令文件与自动记忆两条路径，前者权威、后者补充。",
+          "evidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/core/src/context/user_instructions.rs\ndocs/agents_md.md\ncodex-rs/memories/read/src/lib.rs"
+        },
+        "opencode": {
+          "detailMd": "OpenCode 没有像独立记忆存储那样的项目记忆系统，最接近的是 session/instruction.ts 的指令文件机制。`Instruction.systemPaths()` 先取全局 ~/.config/opencode/AGENTS.md 与 ~/.claude/CLAUDE.md（可用 disableClaudeCodePrompt 关闭），再在项目目录到 worktree 之间对 AGENTS.md、CLAUDE.md、已废弃的 CONTEXT.md 做 `findUp`，只取第一个命中的文件以避免逐级堆叠；config.instructions 还可追加相对 glob、绝对路径或远程 URL。`system()` 并行读取这些文件并按 “Instructions from: <path>” 注入系统提示。另有 `resolve()`：当模型读取某个文件时，从该文件目录向上寻找最近的 AGENTS.md，并用 per-message claims 集合保证每条消息只附加一次。它只读不写，模型无法自动提炼落盘，因此是“项目级持久知识”的有限实现，归类 partial。",
+          "evidence": "packages/opencode/src/session/instruction.ts\npackages/opencode/src/session/prompt.ts\npackages/web/src/content/docs/rules.mdx"
+        },
+        "pi": {
+          "detailMd": "项目记忆以 AGENTS.md/CLAUDE.md 指令文件实现。ResourceLoader.loadProjectContextFiles 先读 agentDir 下的全局文件，再从 cwd 向上收集祖先目录，候选顺序为 AGENTS.override.md、AGENTS.md、CLAUDE.md，去重后交给 buildSystemPrompt，以 <project_context><project_instructions path=...> 形式注入。\n\n这些文件跨会话持久存在于仓库中，可随版本控制共享；没有自动写入、检索或去重机制，模型不会自行更新记忆。项目信任不影响上下文文件加载（除非使用 --no-context-files 禁用）。",
+          "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/system-prompt.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "detailMd": "项目记忆分三层加载。基础层由 `services/memory.ts` 的 MemoryService 读取 workdir 下的 AGENTS.md（缺失时回退 CLAUDE.md），支持 `@include` 递归展开（深度 5、单文件 64KB、总量 512KB）并原子写入；用户层是 ~/.wave/AGENTS.md，跨项目复用。\n\n目录层由 `utils/nestedMemory.ts` 在 Read 工具访问某子树时按需注入该目录的 AGENTS.md/CLAUDE.md，按 session 去重并做 worktree 路径映射，避免一次性塞满上下文。规则层由 MemoryRuleManager/MemoryRuleService 管理 `.wave/rules` 下带 `paths:` frontmatter 的规则，按路径 glob 与 priority 合并，用户级与项目级分层覆盖。\n\n自动记忆则由 autoMemoryService 在会话结束时 fork 一个受限回合，只允许只读工具和记忆目录内写入，把长期事实提炼到 ~/.wave/projects/<git-common-dir>/memory/MEMORY.md（入口 200 行、25,000 字符上限）。",
+          "evidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/utils/nestedMemory.ts\npackages/agent-sdk/src/managers/MemoryRuleManager.ts\npackages/agent-sdk/src/services/autoMemoryService.ts"
+        }
+      }
+    },
+    {
+      "key": "memory.user",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "用户级 ~/.codex/AGENTS.md 与全局配置保存跨项目偏好，自动记忆亦按全局存储并检索。",
+          "evidence": "codex-rs/core/src/agents_md.rs\ndocs/agents_md.md\ncodex-rs/memories/read/src/lib.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "用户级长期信息仅通过全局 ~/.config/opencode/AGENTS.md 与 ~/.claude/CLAUDE.md 注入所有项目，属于静态指令文件，没有独立的用户偏好记忆或自动更新机制。",
+          "evidence": "packages/opencode/src/session/instruction.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "通过 ~/.pi/agent 下的全局 AGENTS.md 提供跨项目用户偏好，随系统提示加载；没有独立的用户记忆存储或写入工具。",
+          "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/settings.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "用户级 ~/.wave/AGENTS.md 跨项目加载，与项目记忆合并；自动记忆另存于 ~/.wave/projects/<git-common-dir>/memory/MEMORY.md。",
+          "evidence": "packages/agent-sdk/src/services/memory.ts\npackages/agent-sdk/src/constants/memory.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "memory.auto",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "memories 写子系统两阶段从 rollout 提炼记忆，读子系统按需检索注入，支持去重、引用与工作区隔离。",
+          "evidence": "codex-rs/memories/write/src/phase1.rs\ncodex-rs/memories/write/src/phase2.rs\ncodex-rs/memories/read/src/lib.rs\ncodex-rs/memories/README.md"
+        },
+        "opencode": {
+          "status": "no",
+          "notes": "未发现由模型在对话中自动提炼、写入、检索或去重的记忆机制；会话摘要/压缩只服务当前上下文，指令文件只能手工编辑。",
+          "evidence": "packages/opencode/src/session/instruction.ts\npackages/opencode/src/session/compaction.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无模型自动提炼、写入、检索或去重记忆的机制；上下文仅来自指令文件、会话历史与压缩摘要。",
+          "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "autoMemoryService 在会话结束时 fork 受限回合提炼长期事实，只允许只读工具与记忆目录写入，入口限制 200 行/25,000 字符并提供 drain 超时。",
+          "evidence": "packages/agent-sdk/src/services/autoMemoryService.ts\npackages/agent-sdk/src/constants/memory.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "memory.scoped",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "指令文件按目录就近覆盖，自动记忆按工作区分区存储并在读取时合并，形成路径级作用域与优先级。",
+          "evidence": "codex-rs/core/src/agents_md.rs\ncodex-rs/memories/write/src/workspace.rs\ncodex-rs/memories/read/src/usage.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "指令文件具备路径作用域：项目根 AGENTS.md 全局生效，读取某文件时会向上附加最近的目录级 AGENTS.md；但这属于作用域规则加载，不是带优先级合并的独立记忆系统。",
+          "evidence": "packages/opencode/src/session/instruction.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "指令文件按目录层级加载（cwd 与祖先目录），越近作用域越晚注入；没有按路径匹配的规则记忆或优先级合并配置。",
+          "evidence": "packages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "MemoryRuleManager 加载 .wave/rules 下带 paths/priority frontmatter 的规则，按路径 glob 与优先级合并，区分用户级与项目级作用域。",
+          "evidence": "packages/agent-sdk/src/managers/MemoryRuleManager.ts\npackages/agent-sdk/src/services/MemoryRuleService.ts\npackages/agent-sdk/src/types/memoryRule.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "session.persistence",
+      "overviewMd": "会话持久化决定历史能否恢复、分支与回滚。对比重点在落盘格式（JSONL/SQLite）、事件模型、恢复与分支方式、写入并发安全，以及清理策略。",
+      "diffSummaryMd": "Codex 用 JSONL rollout 加 SQLite state_db 保存索引与元数据，compression 压缩历史，thread-store 统一读写供 TUI/exec/app-server 复用；opencode 已迁移到 SQLite + Drizzle（SessionTable/PartTable），part 级流式写入、游标分页，快照 patch 支撑回滚，旧 JSON 仅作兼容；pi 是 append-only JSONL 树（id/parentId 构成版本树，v3 迁移），并新增 node:sqlite 后端与 harness 会话模型；wave-agent 用 JSONL 追加写（首行 metadata header），加载时重建消息与 usage，快照单独存 file-history，按 cleanupPeriodDays 清理。格式上 opencode 最「数据库化」，pi 的树结构最适合分支，Codex 与 wave-agent 最接近事件日志。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "会话以 JSONL rollout 落盘，SQLite state_db 保存索引与元数据，compression 压缩历史，thread-store 提供统一读写接口。",
+          "evidence": "codex-rs/rollout/src/lib.rs\ncodex-rs/rollout/src/state_db.rs\ncodex-rs/rollout/src/compression.rs\ncodex-rs/thread-store/src/store.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "会话与消息/part 通过 Drizzle ORM 持久化到本地 SQLite（SessionTable/PartTable），支持迁移、分页查询、归档与删除级联；快照记录文件 patch，旧 JSON 存储仅作兼容。",
+          "evidence": "packages/opencode/src/session/session.ts\npackages/core/src/session/sql.ts\npackages/opencode/src/storage/storage.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "会话以 append-only JSONL 树持久化，每行含 id/parentId 的条目，支持版本迁移；另有 node:sqlite 后端与新的 harness 会话模型。",
+          "evidence": "packages/coding-agent/src/core/session-manager.ts\npackages/agent/src/harness/session/jsonl.ts\npackages/session-backends/sqlite-node/src/index.ts\npackages/coding-agent/docs/session-format.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "会话按 JSONL 追加写入 ~/.wave/projects，首行 metadata 记录 workdir/时间/分支，消息与事件逐行存储，支持加载、列举、截断与迁移。",
+          "evidence": "packages/agent-sdk/src/services/session.ts\npackages/agent-sdk/src/services/jsonlHandler.ts\npackages/agent-sdk/src/services/reversionService.ts\npackages/agent-sdk/src/utils/sessionCleanup.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "会话以 JSONL rollout 持久化。rollout/src/lib.rs 定义事件记录与恢复，recorder 追加写入 ~/.codex/sessions；state_db.rs 用 SQLite 保存会话索引、元数据与 rollout 引用，支持快速列出、搜索与迁移。compression.rs 对历史做压缩存储。thread-store 提供统一读写接口，供 TUI、exec、app-server 复用。恢复时按 id 读取 rollout 重建对话；分支通过复制前缀生成新 rollout；归档与删除由 cli/src/main.rs 的 Resume/Fork/Archive/Delete 子命令实现。写入带锁与反向扫描，兼顾并发安全与大文件读取效率。",
+          "evidence": "codex-rs/rollout/src/lib.rs\ncodex-rs/rollout/src/state_db.rs\ncodex-rs/rollout/src/compression.rs\ncodex-rs/thread-store/src/store.rs"
+        },
+        "opencode": {
+          "detailMd": "会话持久化采用 SQLite + Drizzle ORM，而非早期 JSON 文件。core/session/sql.ts 定义 SessionTable 与 PartTable（含 parent_id、tokens、cost、revert、share_url、workspace_id、archived 等列），迁移脚本位于 core/src/database/migration。session/session.ts 的 `fromRow`/`toRow` 在 schema 与行之间映射，`get`/`list`/`messages` 用条件查询与游标分页（默认 limit 100），`updateMessage`/`updatePart` 做增量写入；删除时递归删除子会话并发布 Deleted 事件。消息内容以 part 形式存储，processor 通过 `updatePartDelta` 流式追加文本，减少整段重写。文件改动由 Snapshot 服务在 step 前后 track/patch 生成 FileDiff 并作为 patch part 落库，支撑回滚。SessionRevert 保存 revert 指针与快照。历史 JSON 存储（storage/storage.ts）保留给迁移与兼容读取，新路径统一走 SQLite。",
+          "evidence": "packages/opencode/src/session/session.ts\npackages/core/src/session/sql.ts\npackages/opencode/src/snapshot/index.ts\npackages/opencode/src/storage/storage.ts"
+        },
+        "pi": {
+          "detailMd": "coding-agent 的 SessionManager 使用 append-only JSONL：每行一个 SessionEntry（message、model_change、compaction、branch_summary、label 等），通过 id/parentId 构成树，CURRENT_SESSION_VERSION=3 并提供 v1→v2 迁移。默认目录为 ~/.pi/agent/sessions/<cwd 编码>/，支持 --session、--continue、--no-session 与 --session-dir。\n\n新 harness 在 packages/agent/src/harness/session 下定义 lanes/records/operations，JSONL 存储由 jsonl.ts 与 jsonl/repo.ts 实现；packages/session-backends/sqlite-node 用 node:sqlite 提供另一后端。上下文重建时按叶子回溯父链并应用压缩边界。",
+          "evidence": "packages/coding-agent/src/core/session-manager.ts\npackages/agent/src/harness/session/jsonl.ts\npackages/session-backends/sqlite-node/src/index.ts\npackages/coding-agent/docs/session-format.md"
+        },
+        "wave-agent": {
+          "detailMd": "会话以 JSONL 逐行落盘，目录为 ~/.wave/projects/<project>/，由 `services/jsonlHandler.ts` 负责追加、解析与截断；`services/session.ts` 在其上实现 create/load/list/truncate/relocate。每个转录首行是 metadata header（workdir/时间/分支/sessionId），后续每行是一条消息或事件（user/assistant/tool_result/usage/system），追加写保证崩溃时已完成的轮次可恢复。\n\n加载时 `loadSessionFromJsonl` 重建消息列表与 usage 汇总，`listSessions` 扫描项目目录按更新时间排序供 /resume 使用；`truncateSession` 用于 rewind 后截断尾部。恢复还依赖 `services/sessionEntries.ts` 与 `utils/transcriptPage.ts` 做分页与索引。\n\n文件改动快照单独放在 ~/.wave/file-history/<rootSessionId>，由 reversionService 管理，以便回滚时同时还原对话与工作区。清理由 utils/sessionCleanup.ts 按 cleanupPeriodDays（默认 30 天）删除过期会话并处理 worktree 残留。",
+          "evidence": "packages/agent-sdk/src/services/session.ts\npackages/agent-sdk/src/services/jsonlHandler.ts\npackages/agent-sdk/src/services/reversionService.ts\npackages/agent-sdk/src/utils/sessionCleanup.ts"
+        }
+      }
+    },
+    {
+      "key": "session.resume",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "CLI resume 与 TUI 恢复命令可按 id 或上次会话载入历史继续对话。",
+          "evidence": "codex-rs/cli/src/main.rs\ncodex-rs/tui/src/slash_command.rs\ncodex-rs/rollout/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "`opencode run --continue` 继续最近会话、`--session <id>` 恢复指定会话，attach 模式也支持 continue/session/fork；会话以 SQLite 记录可直接重载。",
+          "evidence": "packages/opencode/src/cli/cmd/run.ts\npackages/opencode/src/cli/cmd/attach.ts\npackages/opencode/src/session/session.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "支持 --continue/-c 恢复上次会话、--session <id> 指定会话，交互式 session-selector 可搜索并切换历史会话。",
+          "evidence": "packages/coding-agent/src/cli/args.ts\npackages/coding-agent/src/main.ts\npackages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/src/modes/interactive/components/session-selector.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "listSessions 扫描项目转录，/resume 与 ResumeCommand 按 id 或最近会话恢复，重建消息、usage 与工作目录上下文。",
+          "evidence": "packages/agent-sdk/src/services/session.ts\npackages/code/src/components/ResumeCommand.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "session.branch",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "fork 从历史复制前缀生成新 rollout，新旧分支独立演进，互不影响。",
+          "evidence": "codex-rs/cli/src/main.rs\ncodex-rs/rollout/src/lib.rs\ncodex-rs/thread-store/src/store.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Session.fork 可按指定消息分叉出新会话并复制历史 part，标题自动追加 fork 序号；CLI/TUI 提供 --fork 与分叉对话框。",
+          "evidence": "packages/opencode/src/session/session.ts\npackages/tui/src/routes/session/dialog-fork-from-timeline.tsx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "会话为 JSONL 树，/tree 在历史节点间切换并可从任意节点 fork/clone 新会话；分支继承父节点历史后独立追加。",
+          "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/src/modes/interactive/components/tree-selector.ts\npackages/coding-agent/docs/sessions.md"
+        },
+        "wave-agent": {
+          "status": "no",
+          "notes": "没有从任意历史消息分叉会话的功能；仅有压缩用的临时 fork 与 /subtask 子代理，二者都不形成可继续的会话分支。",
+          "evidence": "packages/agent-sdk/src/managers/aiManager.ts\npackages/agent-sdk/src/managers/subagentManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "session.rewind",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "TUI 可回退对话到某条历史消息（backtrack），但不恢复工作区文件改动，缺少文件检查点快照。",
+          "evidence": "codex-rs/tui/src/app_backtrack.rs\ncodex-rs/tui/src/slash_command.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "SessionRevert 结合 Snapshot 把对话与工作区文件回退到某条消息/part 的检查点，并提供 unrevert 恢复；revert 状态持久化在会话行。",
+          "evidence": "packages/opencode/src/session/revert.ts\npackages/opencode/src/snapshot/index.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "可通过 /tree 回退对话叶子并生成分支摘要，但不回滚文件系统改动；git-checkpoint 示例用 git stash 提供工作区检查点。",
+          "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/examples/extensions/git-checkpoint.ts\npackages/coding-agent/docs/sessions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "rewind 检查点结合 ~/.wave/file-history 文件快照，/rewind 与 RewindCommand 可回退对话并还原工作区改动，支持选择目标消息。",
+          "evidence": "packages/agent-sdk/src/managers/reversionManager.ts\npackages/agent-sdk/src/services/reversionService.ts\npackages/code/src/components/RewindCommand.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "session.export",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "支持将对话导出为 Markdown，便于分享与归档。",
+          "evidence": "codex-rs/tui/src/slash_command.rs\ncodex-rs/rollout/src/lib.rs\ncodex-rs/history/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "`opencode export [sessionID]` 输出会话 JSON，可选 sanitize 脱敏文件内容、路径与 patch；此外 /share 提供在线分享链接。",
+          "evidence": "packages/opencode/src/cli/cmd/export.ts\npackages/web/src/content/docs/cli.mdx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "/export 将当前会话导出为自包含 HTML（默认）或 .html/.jsonl 文件，便于分享与归档。",
+          "evidence": "packages/coding-agent/src/core/export-html/index.ts\npackages/coding-agent/src/core/slash-commands.ts\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "no",
+          "notes": "没有导出 Markdown/JSON 会话的命令或 UI；transcriptPage 仅用于转录分页展示，不生成可分享文件。",
+          "evidence": "packages/agent-sdk/src/utils/transcriptPage.ts\npackages/code/src/constants/commands.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "session.worktree",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "提供 git worktree 隔离，可为任务或会话创建独立工作树，避免污染主工作区。",
+          "evidence": "codex-rs/worktree/src/lib.rs\ncodex-rs/cli/src/main.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "提供 git worktree 管理模块（创建/列出/移除、分支与 bootstrap），Web/桌面新建会话界面可选择或创建独立 worktree，实现会话隔离工作区。",
+          "evidence": "packages/opencode/src/worktree/index.ts\npackages/app/src/pages/new-session/new-session-workspace-controller.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "不为会话创建独立 git worktree；git-checkpoint 示例只做 stash 检查点，工作区隔离需用户自行处理。",
+          "evidence": "packages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/docs/sessions.md\npackages/coding-agent/examples/extensions/git-checkpoint.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "EnterWorktree/ExitWorktree 工具与 worktreeUtils 为会话创建独立 git worktree，配合 worktreeHooks 与清理逻辑隔离改动。",
+          "evidence": "packages/agent-sdk/src/tools/enterWorktreeTool.ts\npackages/agent-sdk/src/tools/exitWorktreeTool.ts\npackages/agent-sdk/src/utils/worktreeUtils.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "session.retention",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "rollout 维护与策略模块支持归档、删除、压缩与容量清理，CLI 提供 archive/unarchive/delete。",
+          "evidence": "codex-rs/rollout/src/maintenance.rs\ncodex-rs/rollout/src/policy.rs\ncodex-rs/cli/src/main.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "支持会话归档/取消归档、删除级联、列表 limit 与游标分页，但没有按容量/时间自动归档或清理的保留策略配置。",
+          "evidence": "packages/opencode/src/session/session.ts\npackages/opencode/src/cli/cmd/session.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "无自动容量上限、归档或按时间清理策略；交互式会话选择器支持手动删除（移入回收站），其余需用户自行管理。",
+          "evidence": "packages/coding-agent/src/modes/interactive/components/session-selector.ts\npackages/coding-agent/src/core/session-manager.ts\npackages/coding-agent/docs/sessions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "sessionCleanup 按 cleanupPeriodDays（默认 30 天）清理过期转录，并处理 worktree 残留；保留期可通过配置调整。",
+          "evidence": "packages/agent-sdk/src/utils/sessionCleanup.ts\npackages/agent-sdk/src/services/session.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "models.providers",
+      "overviewMd": "多 Provider 接入用统一抽象屏蔽各家模型 API 差异。对比重点在内置 provider 覆盖面、自定义端点与兼容协议支持、鉴权方式（API Key/OAuth），以及模型能力与错误处理。",
+      "diffSummaryMd": "Codex 的 ModelProviderInfo 统一 base_url、wire_api、认证与重试，内置 OpenAI、Bedrock、Vertex、Ollama、LM Studio，config.toml 可扩展；opencode 基于 AI SDK 的 BUNDLED 动态 import 覆盖十余家 provider，合并 models.dev 目录与用户自定义 npm/OpenAI 兼容配置，并有 auth OAuth 插件；pi 在 pi-ai 中定义 Provider 抽象与数十家工厂及协议适配器（anthropic-messages、openai-completions/responses、google-generative-ai 等），扩展可注册新 provider；wave-agent 只分派三类协议（OpenAI chat、OpenAI responses、Anthropic messages），模型可配 baseUrl/apiKey/apiType，统一 10 次指数退避重试。覆盖面 opencode 与 pi 最广，wave-agent 最精简但协议划分清晰。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "统一 Provider 抽象接入 OpenAI、Bedrock、GCP Vertex、Ollama、LM Studio 等，并可在 config.toml 的 model_providers 扩展自定义端点。",
+          "evidence": "codex-rs/model-provider-info/src/lib.rs\ncodex-rs/model-provider/src/provider.rs\ncodex-rs/codex-api/src/provider.rs\ndocs/config.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "provider.ts 内置 @ai-sdk/*、OpenRouter、GitLab、Copilot、Venice 等 SDK 加载器，结合 models.dev 目录与用户自定义 npm/OpenAI-compatible provider，统一 getModel/getLanguage 并提供 provider 特有转换。",
+          "evidence": "packages/opencode/src/provider/provider.ts\npackages/opencode/src/provider/transform.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "Provider 抽象统一多家模型 API，pi-ai 内置数十家工厂与协议适配器，并允许自定义 provider 与兼容端点。",
+          "evidence": "packages/ai/src/models.ts\npackages/ai/src/providers/all.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/coding-agent/src/core/model-registry.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "aiService 统一分派 OpenAI chat/completions、/responses 与原生 Anthropic /messages 三类协议，模型可配 baseUrl/apiKey/apiType，支持兼容网关。",
+          "evidence": "packages/agent-sdk/src/services/aiService.ts\npackages/agent-sdk/src/utils/modelTransport.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts\npackages/agent-sdk/src/utils/anthropicMessagesClient.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "Provider 抽象位于 model-provider-info 与 codex-api。ModelProviderInfo 描述 base_url、wire_api、认证方式、重试与流超时；built_in_model_providers 内置 OpenAI、Amazon Bedrock、Bedrock Runtime、GCP Vertex、Ollama、LM Studio，用户可在 config.toml 的 model_providers 下扩展或覆盖受限字段。codex-api/provider.rs 与 auth.rs 负责构造带认证头的 HTTP/WS 客户端，统一走 Responses 协议；sse 模块解析流式事件。models-manager 从目录接口或缓存获取模型能力与定价，login crate 处理 OAuth 与设备码。内置 Provider 不允许随意改写身份与鉴权，确保托管策略可控。",
+          "evidence": "codex-rs/model-provider-info/src/lib.rs\ncodex-rs/model-provider/src/provider.rs\ncodex-rs/codex-api/src/provider.rs\ncodex-rs/models-manager/src/catalog.rs"
+        },
+        "opencode": {
+          "detailMd": "多 Provider 接入集中在 provider/provider.ts。文件内维护 BUNDLED 映射，把 Anthropic、OpenAI、Google/Vertex、Bedrock、OpenRouter、xAI、Mistral、Groq、Cerebras、Cohere、Alibaba、GitLab、Copilot、Venice 等 SDK 包映射到动态 import 与工厂函数，并支持本地模型走 OpenAI-compatible。provider 列表来自 models.dev 目录并合并用户 config.provider（可指定 npm、options、baseURL、models），`getModel` 解析模型元数据，`getLanguage` 惰性加载 SDK 语言模型。provider/transform.ts 负责按 provider 生成 providerOptions、cacheControl、thinking/reasoning 参数与最大输出 token。鉴权由 Auth 服务与 plugin/ 下的 OAuth 插件（Codex、Copilot、GitLab、Poe、Azure、Cloudflare、xAI 等）提供，模型状态与错误映射在 model-status.ts/error.ts。",
+          "evidence": "packages/opencode/src/provider/provider.ts\npackages/opencode/src/provider/transform.ts\npackages/opencode/src/provider/auth.ts"
+        },
+        "pi": {
+          "detailMd": "Provider 抽象在 packages/ai/src/models.ts：Provider 描述 id/name/baseUrl/headers/auth/getModels/stream，Models 负责注册、刷新与选择。packages/ai/src/providers/all.ts 组装数十家工厂（Anthropic、OpenAI、Google、Bedrock、Azure、Mistral、Groq、OpenRouter、DeepSeek、Kimi、xAI 等），各自映射到 api/ 下的协议适配器，如 anthropic-messages、openai-completions/responses、google-generative-ai、bedrock-converse-stream。\n\ncoding-agent 的 model-registry、model-runtime 与 provider-composer 在其上实现模型目录、OAuth/API Key 解析与自定义 provider；扩展也可调用 registerProvider 注入新 provider。",
+          "evidence": "packages/ai/src/models.ts\npackages/ai/src/providers/all.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/coding-agent/src/core/model-registry.ts"
+        },
+        "wave-agent": {
+          "detailMd": "Provider 抽象集中在 `services/aiService.ts`：按模型配置的 apiType 分派到三条线——OpenAI 兼容的 /chat/completions（utils/openaiClient.ts）、OpenAI /responses（services/responsesApi.ts）以及原生 Anthropic /messages（utils/anthropicMessagesClient.ts，带 x-api-key/Bearer 与 anthropic-version）。\n\n`utils/modelCapabilities.ts` 的 resolveApiType 决定走哪条，supportsPromptCaching/supportsVision 决定是否加 cache_control、是否允许图片。所有请求共享 `utils/modelTransport.ts` 的传输层：MAX_RETRIES=10、500ms 起指数退避至 32s、尊重 retry-after，对 429/5xx（501 除外）与网络错误重试。\n\n配置来自 configurationService 的分层合并（用户 ~/.wave/settings.json 与项目 .wave/settings 系列），每个 model 可自定义 baseUrl/apiKey/apiType/contextWindow/能力位；网关模式只需指向兼容端点。",
+          "evidence": "packages/agent-sdk/src/services/aiService.ts\npackages/agent-sdk/src/utils/modelTransport.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts\npackages/agent-sdk/src/utils/anthropicMessagesClient.ts"
+        }
+      }
+    },
+    {
+      "key": "models.catalog",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "models-manager 维护模型目录与缓存，包含能力、上下文与定价元数据，并支持自定义模型覆盖。",
+          "evidence": "codex-rs/models-manager/src/catalog.rs\ncodex-rs/models-manager/src/manager.rs\ncodex-rs/model-provider-info/src/capabilities.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "core/models-dev.ts 拉取并缓存 models.dev 目录，包含能力、上下文/输出 limit、价格与状态；用户可在 config 中自定义模型并合并覆盖。",
+          "evidence": "packages/core/src/models-dev.ts\npackages/opencode/src/provider/provider.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "内置 models.generated.ts 模型清单，含上下文窗口、定价与能力；支持 models-store 刷新与 models.json 自定义模型。",
+          "evidence": "packages/ai/src/models.generated.ts\npackages/ai/src/model-catalog.ts\npackages/coding-agent/src/core/model-registry.ts\npackages/coding-agent/docs/models.md"
+        },
+        "wave-agent": {
+          "status": "partial",
+          "notes": "模型清单由用户/项目配置与远端设置下发，能力位（vision/cache）可配；没有内置的模型价格表或官方目录。",
+          "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "models.auth",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "支持 ChatGPT OAuth、API Key、设备码登录以及 Bedrock/GCP 云凭证，凭证按 Provider 注入请求。",
+          "evidence": "codex-rs/login/src/lib.rs\ncodex-rs/model-provider/src/auth.rs\ndocs/authentication.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Auth 服务保存凭据，内置 Codex、GitHub Copilot、GitLab、Poe、Azure、Cloudflare、xAI 等 OAuth 插件与 API Key 登录流程，provider 配置可声明鉴权提示。",
+          "evidence": "packages/opencode/src/provider/auth.ts\npackages/opencode/src/plugin/openai/codex.ts\npackages/opencode/src/plugin/github-copilot/copilot.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "支持 API Key、环境变量与 OAuth（PKCE/设备码）登录 Anthropic、GitHub Copilot、OpenAI Codex、Kimi、OpenRouter 等，凭据本地保存。",
+          "evidence": "packages/ai/src/auth/credential-store.ts\npackages/ai/src/auth/oauth/pkce.ts\npackages/ai/src/auth/oauth/device-code.ts\npackages/ai/src/providers/anthropic.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "支持 SSO 浏览器授权（authorization_code，JWT+refresh 存 ~/.wave/auth.json，401/403 自动刷新）以及模型 API Key 配置。",
+          "evidence": "packages/agent-sdk/src/services/authService.ts\npackages/agent-sdk/src/services/configurationService.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "models.roles",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "可分别配置主模型、review_model、default_subagent_model 与压缩模型，按用途分工。",
+          "evidence": "codex-rs/config/src/config_toml.rs\ncodex-rs/core/src/agent/role.rs\ncodex-rs/core/src/compact.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "内置隐藏的 compaction/title/summary 代理与 getSmallModel 小模型选择，子代理可在 agent 配置中单独指定 model；主/压缩/子代理用途可分别配置。",
+          "evidence": "packages/opencode/src/agent/agent.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/provider/provider.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "未提供主模型、压缩模型、子代理模型的分角色配置；压缩复用当前模型，示例 subagent 可按 agent 指定 --model。",
+          "evidence": "packages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/docs/models.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "主模型之外可配置 fastModel、压缩/记忆 fork 模型、visionModel 与子代理模型（plan 用 inherit），按用途解析不同配置。",
+          "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/agent-sdk/src/builtin/subagents.ts\npackages/agent-sdk/src/managers/aiManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "models.caching",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "请求携带 prompt_cache_key 与缓存 TTL 选项，利用服务端缓存降低长上下文重复计费与延迟。",
+          "evidence": "codex-rs/codex-api/src/common.rs\ncodex-rs/core/src/session/turn_context.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "ProviderTransform 为支持的服务端注入缓存标记（Anthropic cache_control、Gemini cachePoint、OpenAI/Copilot cache_control 等），并按模型能力自动附加到消息与系统提示。",
+          "evidence": "packages/opencode/src/provider/transform.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "Provider 层支持 Anthropic cache_control 与 OpenAI prompt cache，settings 提供 cacheRetention；cache-stats 分析缓存命中与浪费。",
+          "evidence": "packages/ai/src/types.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/ai/src/api/openai-prompt-cache.ts\npackages/coding-agent/src/core/cache-stats.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "对支持的模型在消息/工具前缀加 cache_control: ephemeral，系统提示按 shared/session 分层，压缩 fork 复用同一前缀以命中缓存。",
+          "evidence": "packages/agent-sdk/src/utils/cacheControlUtils.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts\npackages/agent-sdk/src/managers/aiManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "models.multimodal",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "图片经 image_preparation 编码后作为多模态内容发送，支持本地图片与截图输入。",
+          "evidence": "codex-rs/core/src/image_preparation.rs\ncodex-rs/core/src/tools/handlers/view_image.rs\ncodex-rs/codex-api/src/common.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "支持图片/PDF 输入：read 工具识别图片并返回 file part，Image 服务做尺寸/体积校验与缩放，消息转换把附件作为多模态内容发送给模型，MCP 资源也支持有限媒体类型。",
+          "evidence": "packages/opencode/src/image/image.ts\npackages/opencode/src/tool/read.ts\npackages/opencode/src/session/message-v2.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "read 工具可读取图片并按 MIME 传给模型，Provider 适配层支持图像内容块；CLI 也支持粘贴剪贴板图片。",
+          "evidence": "packages/coding-agent/src/core/tools/read.ts\npackages/ai/src/types.ts\npackages/ai/src/api/anthropic-messages.ts\npackages/coding-agent/src/utils/clipboard-image.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "readTool 与宿主附件可产生图片输入，经 toolImageIngest/imageRewrite 规范化后按模型能力以 image_url/base64 传给 vision 模型。",
+          "evidence": "packages/agent-sdk/src/utils/toolImageIngest.ts\npackages/agent-sdk/src/utils/imageRewrite.ts\npackages/agent-sdk/src/utils/modelCapabilities.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "models.retry",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "对限流与网络错误做退避重试，流空闲超时与最大重试可配置，并支持降级与错误映射。",
+          "evidence": "codex-rs/model-provider-info/src/lib.rs\ncodex-rs/core/src/responses_retry.rs\ncodex-rs/codex-api/src/common.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "SessionRetry 对 429/5xx、限流、网络与超时错误做指数退避（初始 2s、最多 5 次），优先采用 Retry-After/retry-after-ms 响应头，并通过状态事件展示尝试信息。",
+          "evidence": "packages/opencode/src/session/retry.ts\npackages/opencode/src/provider/model-status.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "对限流、网络与 5xx 使用有界指数退避重试（maxRetries、baseDelayMs），但不切换到备用模型，也无模型级降级链。",
+          "evidence": "packages/ai/src/utils/provider-retry.ts\npackages/ai/src/utils/retry.ts\npackages/coding-agent/src/core/settings-manager.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "modelTransport 对 429、5xx（501 除外）与网络错误重试 10 次，指数退避 500ms→32s 并尊重 retry-after；模型角色可指定备用模型。",
+          "evidence": "packages/agent-sdk/src/utils/modelTransport.ts\npackages/agent-sdk/src/services/configurationService.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "interface.tui",
+      "overviewMd": "终端界面是主要交互入口，承载流式展示与工具审批。对比重点在渲染栈与重绘策略、输入与键位、diff 展示、斜杠命令与运行中转向，以及是否能连接远程实例。",
+      "diffSummaryMd": "Codex 用 ratatui（Rust）自绘，流式对话、工具卡片、Markdown/Diff、slash 命令与运行中转向，状态栏聚合模型 token 与 git 信息；opencode 的 TUI 是 SolidJS + @opentui/core，连接本地 server 消费事件流，因此可 attach 到远程实例，支持 30+ 主题与插件插槽；pi 自研组件化 TUI，按行差量重绘，支持 overlay、Kitty 键盘协议与 IME 光标；wave-agent 是 React Ink 应用，reducer 驱动流式更新，并与 print/stdio/daemon 三种非交互入口共用事件回调。渲染栈从 Rust 到 SolidJS 到自研到 Ink，差异还体现在远程 attach 与插件化能力上。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "基于 ratatui 的交互式终端界面，含流式对话、工具卡片、Markdown/Diff 渲染、slash 命令与运行中转向。",
+          "evidence": "codex-rs/tui/src/lib.rs\ncodex-rs/tui/src/app.rs\ncodex-rs/tui/src/bottom_pane/mod.rs\ncodex-rs/tui/src/markdown_render.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "packages/tui 基于 SolidJS 与 @opentui/core 渲染终端界面，提供会话路由、提示输入、命令面板、主题、键位、diff 展示与插件插槽，通过 SDK 连接本地 HTTP 服务消费事件流。",
+          "evidence": "packages/tui/src/app.tsx\npackages/tui/src/routes/session/index.tsx\npackages/tui/src/component/prompt"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "自研 TUI 采用组件化 render 与差量重绘，支持 overlay、滚动区、Kitty 键盘协议与 IME 光标；InteractiveMode 组合编辑器、Markdown 与流式消息。",
+          "evidence": "packages/tui/src/tui.ts\npackages/tui/src/index.ts\npackages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/coding-agent/docs/tui.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "React Ink TUI 提供流式消息、工具卡片、审批 diff、队列消息、历史搜索与斜杠命令，另有 print/stdio/daemon 三种非交互入口。",
+          "evidence": "packages/code/src/cli.tsx\npackages/code/src/components/App.tsx\npackages/code/src/components/ChatInterface.tsx\npackages/code/src/constants/commands.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "TUI 基于 ratatui，入口 tui/src/lib.rs 建立 App 与事件循环，chatwidget 负责对话渲染、流式增量与工具卡片，bottom_pane 处理输入与补全，markdown_render 与 diff_render 负责富文本和补丁展示。app.rs 处理按键、slash 命令（slash_command.rs）与运行中转向；keymap.rs 支持自定义键位，theme_picker.rs 加载 .tmTheme 主题。状态栏由 statusline_provider.rs 聚合模型、token 与 git 信息。TUI 通过 app-server 或 core 事件流获取状态，与 headless 模式共享同一回合语义，避免行为分叉。",
+          "evidence": "codex-rs/tui/src/lib.rs\ncodex-rs/tui/src/app.rs\ncodex-rs/tui/src/bottom_pane/mod.rs\ncodex-rs/tui/src/diff_render.rs"
+        },
+        "opencode": {
+          "detailMd": "TUI 位于 packages/tui，使用 SolidJS 响应式模型与 @opentui/core 的终端 renderable 体系自绘。`src/app.tsx` 组装路由、上下文与全局事件；`src/routes/session/index.tsx` 是会话主视图，订阅 SDK 事件（sync/event context）增量渲染 assistant 文本、reasoning、工具 part（含 QUEUED 状态）、todo 与权限弹窗。输入由 `component/prompt` 管理，支持多行编辑、@ 文件补全与斜杠命令；`keymap.tsx` 定义可配置键位，`theme/index.ts` 加载 30+ JSON 主题并支持自定义配色与 diff_style（stacked/unified）。`plugin/slots.tsx` 通过 @opentui/solid 的 slot registry 允许 TUI 插件注入自定义渲染。TUI 不直接运行 agent，而是连接 `opencode serve`/内嵌本地 server，经 @opencode-ai/sdk 调用 API 并消费 SSE/WebSocket 事件，因此可 attach 到远程实例。",
+          "evidence": "packages/tui/src/app.tsx\npackages/tui/src/routes/session/index.tsx\npackages/tui/src/keymap.tsx\npackages/tui/src/plugin/slots.tsx"
+        },
+        "pi": {
+          "detailMd": "TUI 在 packages/tui：Component 接口要求 render(width) 返回行数组，Tui 维护前后帧差异并只重绘变化行，支持 overlay/锚点、ScrollView、焦点与 CURSOR_MARKER 以兼容 IME 光标。输入层处理 Kitty keyboard protocol、按键释放与可配置 keybindings。\n\ncoding-agent 的 InteractiveMode 组合 Editor、Markdown、Loader、SelectList 等组件，把 agent 事件流映射为流式消息、工具块与 footer；主题由 dark/light JSON 与 theme-controller 管理，可热重载。",
+          "evidence": "packages/tui/src/tui.ts\npackages/tui/src/index.ts\npackages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/coding-agent/docs/tui.md"
+        },
+        "wave-agent": {
+          "detailMd": "CLI 是 React Ink 应用，入口 `packages/code/src/cli.tsx`，主界面在 App.tsx/ChatInterface.tsx：用 Ink 的 Box/Text 组件渲染消息流、工具卡片、确认框与输入框，流式增量经 reducer 更新，避免整屏重绘。\n\n输入层支持斜杠命令（constants/commands.ts 定义 tasks/mcp/agents/skills/hooks/rewind/context/model/resume/compact/subtask 等）、@ 文件选择、历史搜索与 Esc 中断；QueuedMessageList 展示运行期排队消息。工具审批用 ConfirmationSelector/ConfirmationDetails 呈现 diff 与命令，DiffDisplay/CompactDisplay/ReasoningDisplay 分别展示改动、压缩进度与思考。\n\n除交互 TUI 外，同一包还提供 print-cli.ts（headless）、stdio-cli.ts（IDE 桥）与 daemon-cli.ts，共用 agent 的事件回调与控制协议。",
+          "evidence": "packages/code/src/cli.tsx\npackages/code/src/components/ChatInterface.tsx\npackages/code/src/components/QueuedMessageList.tsx\npackages/code/src/components/DiffDisplay.tsx"
+        }
+      }
+    },
+    {
+      "key": "interface.vscode",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "仓库内无 VS Code 扩展源码；通过 app-server 协议与 /ide 上下文支持 IDE 集成，官方扩展在外部仓库维护。",
+          "evidence": "codex-rs/tui/src/chatwidget/ide_context.rs\ncodex-rs/app-server-protocol/src/lib.rs\nsdk/typescript/src/index.ts"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "sdks/vscode 提供官方 VS Code 扩展，注册 open 终端与添加文件路径等命令，向集成终端发送 `opencode --port` 并复用已有终端，属于编辑器终端集成。",
+          "evidence": "sdks/vscode/src/extension.ts\nsdks/vscode/package.json"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无官方 VS Code 扩展或 IDE 集成包；仅提供 CLI/TUI 与 SDK/RPC 供第三方封装。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackage.json"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "packages/vscode 提供 wave-vscode（CodeWave IDE）扩展，复用 webview UI 与 agent-sdk，通过 stdio 桥接会话与编辑器上下文。",
+          "evidence": "packages/vscode/package.json\npackages/vscode/src/session/messageHandler.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "interface.jetbrains",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "no",
+          "notes": "未见 JetBrains 插件或相关适配代码，IDE 集成仅以 app-server 协议形式对外提供。",
+          "evidence": "codex-rs/app-server-protocol/src/lib.rs\ncodex-rs/Cargo.toml"
+        },
+        "opencode": {
+          "status": "no",
+          "notes": "仓库中没有 JetBrains/IntelliJ 专用插件工程；仅有通用 ACP 支持与 VS Code 扩展，JetBrains 只能通过支持 ACP 的第三方编辑器间接接入。",
+          "evidence": "packages/web/src/content/docs/acp.mdx\nsdks/vscode/src/extension.ts\npackages/web/src/content/docs/ide.mdx"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无 JetBrains 插件或相关工程；IDE 集成需基于 RPC/SDK 自行实现。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackage.json"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "packages/jetbrains 是 Gradle/Kotlin 插件，内嵌 webview 资源并连接同一 agent-sdk/stdio 桥，覆盖 JetBrains 系列 IDE。",
+          "evidence": "packages/jetbrains/build.gradle.kts\npackages/jetbrains/src/main/kotlin"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "interface.desktop",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "CLI 可启动已安装的 Codex Desktop 应用，app-server 供其连接，但桌面客户端源码不在本仓库。",
+          "evidence": "codex-rs/cli/src/app_cmd.rs\ncodex-rs/app-server/src/lib.rs\ncodex-rs/app-server-daemon/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "packages/desktop 是 Electron 桌面应用，包含主进程窗口管理、sidecar 本地 server、IPC、自动更新、菜单与 WSL 支持，渲染层复用 app 界面。",
+          "evidence": "packages/desktop/src/main/index.ts\npackages/desktop/src/main/sidecar.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无 Electron/Tauri 等桌面客户端；产品形态为终端 CLI。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackage.json"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "packages/desktop 为 Electron 应用（wave-desktop），主进程管理窗口与更新，渲染层复用 webview，支持桌面端会话与设置。",
+          "evidence": "packages/desktop/package.json\npackages/desktop/src/main/navigationGuard.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "interface.web",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "仓库无 Web UI；cloud-tasks 提供访问云端任务的 CLI，浏览器界面由外部产品提供。",
+          "evidence": "codex-rs/cloud-tasks/src/lib.rs\ncodex-rs/cloud-tasks/src/cli.rs\ncodex-rs/backend-client/src/types.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "packages/app 是可在浏览器运行的 SolidStart 会话/项目界面，packages/web 为官网与文档站点，二者共享 UI 组件与主题。",
+          "evidence": "packages/app/src/app.tsx\npackages/web/src/content/docs/index.mdx"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无浏览器 Web 界面；server/client 包仅为实验性本地协议，不提供 Web UI。",
+          "evidence": "packages/coding-agent/README.md\npackages/server/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "partial",
+          "notes": "webview 是共享 React 界面，被 VS Code、JetBrains、桌面与远程页面复用；仓库内没有独立的浏览器 Web 应用入口。",
+          "evidence": "packages/webview/package.json\npackages/webview/src/index.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "interface.themes",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "支持 .tmTheme 主题选择与自定义配色，keymap 可自定义快捷键绑定。",
+          "evidence": "codex-rs/tui/src/theme_picker.rs\ncodex-rs/tui/src/keymap.rs\ncodex-rs/tui/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "内置 30+ 终端主题（catppuccin、dracula、gruvbox、tokyonight 等）并支持自定义主题 JSON 与 diff 样式；keymap.tsx 提供可配置快捷键绑定。",
+          "evidence": "packages/tui/src/theme/index.ts\npackages/tui/src/component/dialog-theme-list.tsx\npackages/tui/src/keymap.tsx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "内置 dark/light JSON 主题与 51 个颜色 token，支持自定义主题热重载；keybindings.json 可重绑快捷键。",
+          "evidence": "packages/coding-agent/docs/themes.md\npackages/coding-agent/src/modes/interactive/theme/theme.ts\npackages/coding-agent/src/modes/interactive/theme/theme-controller.ts\npackages/coding-agent/docs/keybindings.md"
+        },
+        "wave-agent": {
+          "status": "partial",
+          "notes": "提供亮/暗主题（data-theme 检测与主题样式），可在设置中切换；未发现用户自定义配色或键位绑定配置。",
+          "evidence": "packages/webview/src/utils/theme.ts\npackages/webview/src/components/SettingsPage.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "interface.diff-preview",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "diff_render 以结构化 diff 展示文件改动，审批界面同时呈现待执行命令或补丁内容。",
+          "evidence": "codex-rs/tui/src/diff_render.rs\ncodex-rs/core/src/turn_diff_tracker.rs\ncodex-rs/tui/src/app.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "TUI 权限弹窗使用结构化 diff 组件按主题着色渲染增删行与行号，支持 stacked/unified 样式；edit/write 工具在审批元数据中附带生成的 diff。",
+          "evidence": "packages/tui/src/routes/session/permission.tsx\npackages/opencode/src/tool/edit.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "edit 结果返回 diff 与 unified patch，TUI diff 组件按行及词级高亮展示改动；没有独立的审批式 diff 预览面板。",
+          "evidence": "packages/coding-agent/src/modes/interactive/components/diff.ts\npackages/coding-agent/src/core/tools/edit-diff.ts\npackages/coding-agent/src/core/tools/edit.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "webview 的 DiffPane/DiffViewer/DiffFileRows 结构化展示逐文件 diff，TUI 的 DiffDisplay 在审批时展示改动，支持折叠与语法高亮。",
+          "evidence": "packages/webview/src/components/DiffPane.tsx\npackages/webview/src/components/DiffViewer.tsx\npackages/webview/src/components/DiffFileRows.tsx\npackages/code/src/components/DiffDisplay.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "interface.i18n",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "no",
+          "notes": "界面文案为英文硬编码，未见 i18n 框架、语言资源文件或语言切换配置。",
+          "evidence": "codex-rs/tui/src/lib.rs\ncodex-rs/Cargo.toml"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Web/app 内置数十种语言包（packages/app/src/i18n），TUI 也有 Locale 工具处理本地化格式与语言选择，可切换界面语言。",
+          "evidence": "packages/app/src/i18n/en.ts\npackages/tui/src/util/locale.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "界面文案硬编码为英文，无 locale、翻译资源或语言切换配置。",
+          "evidence": "packages/coding-agent/src/modes/interactive/interactive-mode.ts\npackages/coding-agent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "partial",
+          "notes": "仅支持 AI 回复语言（zh-CN/en-US）配置并注入系统提示；界面文案主要为中文硬编码，没有通用 i18n 资源体系。",
+          "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/webview/src/components/SettingsPage.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "run.headless",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "codex exec 非交互执行并输出 JSON/JSONL 事件流，供脚本与流水线消费。",
+          "evidence": "codex-rs/exec/src/lib.rs\ncodex-rs/exec/src/event_processor_with_jsonl_output.rs\ndocs/exec.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "`opencode run` 支持非交互执行与 `--format json` 输出原始事件流，另提供 --command、--file、--session、--fork 等脚本化参数，适合 CI/自动化消费。",
+          "evidence": "packages/opencode/src/cli/cmd/run.ts\npackages/web/src/content/docs/cli.mdx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "-p/--print 单次执行并输出文本，--mode json 输出 JSONL 事件流；非交互模式不弹信任提示，适合脚本消费。",
+          "evidence": "packages/coding-agent/src/modes/print-mode.ts\npackages/coding-agent/src/modes/json-event.ts\npackages/coding-agent/src/cli/args.ts\npackages/coding-agent/docs/json.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "print-cli 支持 -p/print 模式，输出 text、json 或 stream-json（CC 风格事件封套），供脚本与 CI 消费，不含成本字段。",
+          "evidence": "packages/code/src/print-cli.ts\npackages/code/src/utils/printOutput.ts\ndocs/specs/ui/print-mode.md"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "run.sdk",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "提供 TypeScript 与 Python SDK，通过协议与 app-server 嵌入其他应用和自动化流程。",
+          "evidence": "sdk/typescript/src/index.ts\nsdk/python/README.md\ncodex-rs/app-server/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "packages/sdk/js 提供生成的 TypeScript 客户端（含 v2 类型），SDK-next 与 @opencode-ai/plugin 便于以库形式嵌入或编写插件，openapi.json 描述 HTTP 契约。",
+          "evidence": "packages/sdk/js/src/index.ts\npackages/sdk/js/package.json\npackages/sdk/openapi.json"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "createAgentSession 导出可编程会话，支持自定义工具、事件订阅与持久化，文档见 docs/sdk.md。",
+          "evidence": "packages/coding-agent/src/core/sdk.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/docs/sdk.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "wave-agent-sdk 以库形式导出 Agent 与各 manager，CLI、四个宿主与远程端均在此基础上构建，可嵌入其他应用与流水线。",
+          "evidence": "packages/agent-sdk/package.json\npackages/agent-sdk/src/agent.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "run.daemon",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "app-server-daemon 以常驻服务运行，管理生命周期、更新与多客户端连接。",
+          "evidence": "codex-rs/app-server-daemon/src/lib.rs\ncodex-rs/app-server/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "`opencode serve` 启动常驻 headless HTTP 服务并可设 hostname/port，支持多客户端（TUI、Web、attach）连接同一实例。",
+          "evidence": "packages/opencode/src/cli/cmd/serve.ts\npackages/opencode/src/server/server.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "实验性 packages/server 提供 PiServer 与 unix socket 客户端，但未接入主 CLI，无守护进程管理与多客户端生产路径。",
+          "evidence": "packages/server/src/server.ts\npackages/server/README.md\npackages/coding-agent/src/cli/experimental/cli.ts\npackages/coding-agent/src/cli/experimental/commands/server.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "daemon 通过 unix socket（~/.wave/daemon.sock）提供 JSON-RPC 常驻服务，多个 CLI/宿主客户端可连接并复用会话。",
+          "evidence": "packages/code/src/daemon/socketPath.ts\npackages/code/src/daemon/commands.ts\npackages/code/src/daemon-cli.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "run.remote-protocol",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "app-server-protocol 定义 JSON-RPC 协议，支持 stdio、WebSocket 与 UDS 等传输。",
+          "evidence": "codex-rs/app-server-protocol/src/lib.rs\ncodex-rs/app-server/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "服务端以 Effect HttpApi + OpenAPI 暴露 REST 接口与 WebSocket 事件流，另有 ACP（JSON-RPC over stdio）供编辑器集成，TUI/客户端通过 SDK 调用。",
+          "evidence": "packages/opencode/src/server/server.ts\npackages/opencode/src/server/routes/instance/httpapi/server.ts\npackages/opencode/src/acp/service.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "RPC 模式以 JSONL 经 stdin/stdout 收发命令与事件，protocol 包定义 TypeBox schema；网络远程服务仍属实验性。",
+          "evidence": "packages/coding-agent/src/modes/rpc/rpc-mode.ts\npackages/coding-agent/docs/rpc.md\npackages/protocol/src/schemas.ts\npackages/coding-agent/src/modes/rpc/rpc-types.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "定义 stdioProtocol 的 RequestMethod 集合（initialize/sendMessage/rewind/getMcpServers 等）、daemon socket JSON-RPC 与远程控制 WebSocket 中继协议。",
+          "evidence": "packages/agent-sdk/src/types/stdioProtocol.ts\npackages/code/src/daemon/jsonRpcClient.ts\npackages/code/src/remote/relayClient.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "ext.plugins",
+      "overviewMd": "插件系统扩展 agent 的工具、命令、钩子与 UI。对比重点在清单与发现机制、可注册能力、运行时隔离与热重载，以及插件与审批沙箱的关系。",
+      "diffSummaryMd": "Codex 由 plugin/plugin-host 管理清单（skills、MCP、apps、hooks），市场支持安装与版本管理，插件不能绕过审批与沙箱；opencode 加载 npm/本地插件，trigger 统一分发 tool/chat/permission/system.transform 等钩子，插件与宿主同进程、无运行时隔离；pi 用 jiti 加载 TypeScript 扩展，ExtensionAPI 覆盖工具/命令/快捷键/provider/生命周期，同权限运行但示例生态丰富；wave-agent 用 .wave-plugin/plugin.json 清单注册命令/代理/技能/hooks/MCP/UI mods，mods 在 Node vm 的受控 API 中执行，形成轻量沙箱。隔离程度上 wave-agent 最明显，Codex 靠宿主约束，opencode 与 pi 明确同进程运行。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "插件清单声明 skills、MCP、apps 与 hooks，plugin-host 负责发现加载与生命周期，资源解析为受限定位符后注入。",
+          "evidence": "codex-rs/plugin/src/manifest.rs\ncodex-rs/plugin-host/src/lib.rs\ncodex-rs/core-plugins/src/marketplace.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Plugin 服务加载内置鉴权插件与配置声明的 npm/本地插件，PluginLoader 解析规格、安装并动态 import，trigger 统一派发 hook；插件在宿主进程内运行，无独立沙箱。",
+          "evidence": "packages/opencode/src/plugin/index.ts\npackages/opencode/src/plugin/loader.ts\npackages/opencode/src/plugin/install.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "扩展为 TypeScript 模块，jiti 加载，ExtensionRunner 分发事件；ExtensionAPI 提供工具、命令、快捷键、provider 与完整生命周期钩子，/reload 可重载。",
+          "evidence": "packages/coding-agent/src/core/extensions/loader.ts\npackages/coding-agent/src/core/extensions/runner.ts\npackages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "插件以 .wave-plugin/plugin.json 清单声明命令、代理、技能、hooks、MCP 与 UI mods；pluginLoader 校验加载，支持 reload-plugins 热重载。",
+          "evidence": "packages/agent-sdk/src/services/pluginLoader.ts\npackages/agent-sdk/src/managers/pluginManager.ts\npackages/agent-sdk/src/mods/runtime.ts\npackages/agent-sdk/src/types/plugins.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "插件系统由 plugin、core-plugins、plugin-host 组成。PluginManifest 声明名称、版本、skills、MCP 服务器、apps 与 hooks；plugin-host 负责发现、加载与生命周期，core-plugins/marketplace.rs 提供市场索引、安装与版本管理。插件资源在加载时被解析为受限定位符，hooks 以声明式配置注册到 hook_runtime，skills 按需注入。权限上插件不能绕过审批与沙箱，工具调用仍经 ToolOrchestrator。TUI 通过 list_available_plugins_to_install、request_plugin_install 等工具与 slash 命令完成安装，形成发现到启用的闭环。",
+          "evidence": "codex-rs/plugin/src/manifest.rs\ncodex-rs/plugin-host/src/lib.rs\ncodex-rs/core-plugins/src/marketplace.rs\ncodex-rs/core/src/tools/handlers/request_plugin_install.rs"
+        },
+        "opencode": {
+          "detailMd": "插件系统由 plugin/index.ts、loader.ts、install.ts 组成。配置中的 `plugin` 条目先由 PluginLoader 解析为 spec/options，区分 npm 包与本地路径，必要时用 Bun 安装到缓存目录并校验兼容性，然后动态 import 得到导出 hooks 的模块；built-in 插件（Codex/Copilot/GitLab/Poe/Azure/Cloudflare/xAI 等鉴权）直接函数式注册。`Plugin.Service.trigger(name, input, output)` 遍历 hooks 并按序执行“输入+可变输出”模式，覆盖 tool.execute.before/after、tool.definition、chat.params、chat.message、shell.env、permission.ask、event 以及 experimental.chat.system.transform、experimental.session.compacting、experimental.text.complete 等。插件还能通过 `tool` 字段注册自定义工具、通过 auth 提供 OAuth。插件与宿主同进程，获得完整 Node 能力，没有运行时隔离或权限沙箱；TUI 插件则走单独的 slot 注册通道。",
+          "evidence": "packages/opencode/src/plugin/index.ts\npackages/opencode/src/plugin/loader.ts\npackages/opencode/src/plugin/install.ts\npackages/opencode/src/tool/registry.ts"
+        },
+        "pi": {
+          "detailMd": "扩展为 TypeScript 模块，loader.ts 用 jiti 直接加载（支持本地路径、npm/git 包与虚拟模块），并按项目信任决定是否加载项目扩展；runner.ts 的 ExtensionRunner 负责事件分发与 handler 排序。ExtensionAPI 提供 registerTool/registerCommand/registerShortcut/registerFlag/registerProvider 及 on(...) 事件订阅，覆盖 tool_call、session、message、turn 等生命周期。\n\n扩展与主进程同权限运行，没有运行时隔离；/reload 可重新加载扩展。示例目录含 sandbox、subagent、plan-mode、custom-compaction 等大量能力，体现其扩展边界。",
+          "evidence": "packages/coding-agent/src/core/extensions/loader.ts\npackages/coding-agent/src/core/extensions/runner.ts\npackages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "detailMd": "插件由 `services/pluginLoader.ts` 发现和校验：约定 `.wave-plugin/plugin.json` 清单，声明 commands、agents、skills、hooks、mcpServers 与 UI mods；加载器解析清单、检查路径与版本、把各资源注册到对应 manager，并支持 reload-plugins 热重载。`managers/pluginManager.ts` 维护启用状态与作用域（用户/项目），pluginScopeManager 处理覆盖。\n\n插件代码不在主进程裸跑：mods 由 `mods/runtime.ts` 放进 Node vm 上下文，冻结原型与全局、仅暴露受控 API（$.tool.register、$.ui、tool.call/check），并用 vm.Script 执行入口，形成轻量沙箱；钩子类插件则通过 hookManager 在 PreToolUse/PostToolUse 等事件调用外部命令。\n\n`types/plugins.ts` 定义清单与安装记录，MarketplaceService 负责来源与安装状态，二者共同构成「清单声明加运行时隔离」的扩展模型。",
+          "evidence": "packages/agent-sdk/src/services/pluginLoader.ts\npackages/agent-sdk/src/managers/pluginManager.ts\npackages/agent-sdk/src/mods/runtime.ts\npackages/agent-sdk/src/types/plugins.ts"
+        }
+      }
+    },
+    {
+      "key": "ext.marketplace",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "core-plugins 提供市场索引、安装、版本管理与推荐，插件可携带技能、MCP 与 hooks。",
+          "evidence": "codex-rs/core-plugins/src/marketplace.rs\ncodex-rs/plugin/src/manifest.rs\ncodex-rs/core/src/tools/handlers/request_plugin_install.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "插件以 npm 包或本地目录方式在 config 中声明并自动安装，生态文档列出社区插件；但没有内置的插件市场 UI、评分/搜索目录或版本管理界面。",
+          "evidence": "packages/opencode/src/plugin/install.ts\npackages/web/src/content/docs/plugins.mdx\npackages/web/src/content/docs/ecosystem.mdx"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "通过 pi install 从 npm/git/本地安装扩展包，支持 list/update/remove 与清单；无集中式市场、评分或推荐。",
+          "evidence": "packages/coding-agent/src/core/package-manager.ts\npackages/coding-agent/docs/packages.md\npackages/coding-agent/src/core/pi-manifest.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "MarketplaceService 支持 git 市场源、安装/卸载/版本状态与官方镜像，CLI 与 webview 提供市场浏览和安装界面。",
+          "evidence": "packages/agent-sdk/src/services/MarketplaceService.ts\npackages/agent-sdk/src/services/officialMarketplaceMirror.ts\npackages/code/src/components/MarketplaceView.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "ext.hooks",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "hooks 系统定义 14 个生命周期事件（PreToolUse/PostToolUse/PreCompact/SessionStart 等），可执行自定义脚本或注入上下文。",
+          "evidence": "codex-rs/hooks/src/lib.rs\ncodex-rs/core/src/hook_runtime.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "插件可注册工具执行前后、消息转换、chat.params、shell.env、permission.ask 与事件等 hook，在运行时以 trigger 方式同步/异步介入。",
+          "evidence": "packages/opencode/src/plugin/index.ts\npackages/web/src/content/docs/plugins.mdx"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "扩展可订阅 tool_call、tool_result、session_*、message_*、turn_* 等事件，在前后执行自定义逻辑并可阻断或改写输入。",
+          "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/src/core/extensions/runner.ts\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "hookManager 在 PreToolUse/PostToolUse/SessionStart/PreCompact/PostCompact/Stop 等事件执行用户命令，可阻断工具、注入上下文或要求续跑。",
+          "evidence": "packages/agent-sdk/src/managers/hookManager.ts\npackages/agent-sdk/src/services/hook.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "ext.skills",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "skills 以说明文档加资源打包，按需加载并可随插件分发。",
+          "evidence": "codex-rs/skills/src/lib.rs\ndocs/skills.md\ncodex-rs/plugin/src/manifest.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Skill 服务从 .opencode/skills、.claude/skills、.agents/skills 等目录发现 SKILL.md，解析 frontmatter 与资源，经 skill 工具按需加载并注入说明；系统提示列出来可用技能。",
+          "evidence": "packages/opencode/src/skill/index.ts\npackages/opencode/src/tool/skill.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "从 .pi/skills、~/.pi/agent/skills 等加载含 SKILL.md 的技能包，按名称/描述生成 available_skills 注入系统提示，按需读取。",
+          "evidence": "packages/coding-agent/src/core/skills.ts\npackages/coding-agent/src/core/agent-session.ts\npackages/agent/src/harness/system-prompt.ts\npackages/coding-agent/docs/skills.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "内置技能位于 builtin/skills，用户/插件可通过 SKILL.md 定义技能；skillManager 解析并按需加载，skillTool 调用，列表注入系统提示。",
+          "evidence": "packages/agent-sdk/src/managers/skillManager.ts\npackages/agent-sdk/src/tools/skillTool.ts\npackages/agent-sdk/src/utils/skillListing.ts\npackages/agent-sdk/src/builtin/skills/loop.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "ext.commands",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "有内置 slash 命令与可复用 presets/skills，但未见用户以文件自定义 slash 命令并带参数的机制。",
+          "evidence": "codex-rs/tui/src/slash_command.rs\ndocs/slash_commands.md\ncodex-rs/skills/src/lib.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "支持 .opencode/command(s) 与 config 中的 Markdown 命令模板，展开 $1/$ARGUMENTS 占位符、shell 插值与 MCP prompt，可作为斜杠命令触发代理或子任务。",
+          "evidence": "packages/opencode/src/command/index.ts\npackages/opencode/src/config/command.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "支持 Markdown 提示模板（.pi/prompts）与扩展 registerCommand 注册斜杠命令，模板可含参数占位。",
+          "evidence": "packages/coding-agent/src/core/prompt-templates.ts\npackages/coding-agent/src/core/slash-commands.ts\npackages/coding-agent/docs/prompt-templates.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "slashCommandManager 加载用户与插件自定义斜杠命令（提示模板+参数），与内置命令一起在 CLI 命令选择器中呈现。",
+          "evidence": "packages/agent-sdk/src/managers/slashCommandManager.ts\npackages/agent-sdk/src/types/commands.ts\npackages/code/src/components/CommandSelector.tsx"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "ext.plugin-ui",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "插件可提供 statusline 与界面元数据，但没有任意面板或自定义渲染组件的 API。",
+          "evidence": "codex-rs/tui/src/statusline_provider.rs\ncodex-rs/plugin/src/manifest.rs\ncodex-rs/core-plugins/src/marketplace.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "TUI 通过 @opentui/solid 的 slot registry 提供插件渲染插槽，TUI 插件可注册自定义组件/面板；Web 侧也以 React/Solid 组件方式扩展。",
+          "evidence": "packages/tui/src/plugin/slots.tsx\npackages/tui/src/plugin/api.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "扩展 UI 上下文可注入 widget、status/footer、overlay、自定义消息与工具渲染组件，并可替换编辑器。",
+          "evidence": "packages/coding-agent/src/core/extensions/types.ts\npackages/coding-agent/examples/extensions/custom-footer.ts\npackages/coding-agent/examples/extensions/message-renderer.ts\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "mods 运行时提供 Box/Text/Button 等 JSX 元素与 ModPanelRenderer，插件可向 TUI/webview 注入面板、消息组件与提示区 UI。",
+          "evidence": "packages/agent-sdk/src/mods/index.ts\npackages/agent-sdk/src/managers/modManager.ts\npackages/agent-sdk/src/types/mods.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "mcp.stdio",
+      "overviewMd": "MCP stdio 以子进程 stdio 连接本地 MCP 服务器，是最常见的 MCP 接入方式。对比重点在 SDK 依赖、进程生命周期、握手与能力收集、工具命名与权限集成，以及失败重连。",
+      "diffSummaryMd": "Codex 基于 rmcp，stdio_server_launcher 启动子进程、local_stdio_transport 处理 JSON-RPC 帧与 stderr，握手后把 tools/resources 注册进工具清单并走统一审批/沙箱；opencode 用官方 @modelcontextprotocol/sdk 的 StdioClientTransport，带超时 connect、ListRoots 根目录与 tools/prompts/resources 收集；wave-agent 同样基于官方 SDK，统一 stdio/SSE/StreamableHTTP 三种传输，惰性拨号、工具列表快照与命名空间隔离；pi 没有 MCP 客户端（README 明确 No MCP），只能靠扩展自建桥接。前三家实现路线接近，差异在生命周期管理与错误处理。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "rmcp 客户端以子进程 stdio 连接本地 MCP 服务器，完成握手与能力协商，工具/资源注册进工具清单。",
+          "evidence": "codex-rs/rmcp-client/src/stdio_server_launcher.rs\ncodex-rs/rmcp-client/src/local_stdio_transport.rs\ncodex-rs/config/src/mcp_types.rs\ncodex-rs/core/src/tools/handlers/mcp.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "mcp/index.ts 使用 @modelcontextprotocol/sdk 的 StdioClientTransport，按配置的 command/args/env 启动本地 MCP 子进程，带超时连接、ListRoots 根目录与工具/资源/提示收集。",
+          "evidence": "packages/opencode/src/mcp/index.ts\npackages/opencode/src/mcp/catalog.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "未实现 MCP 客户端，仓库无 @modelcontextprotocol/sdk 依赖或 stdio 传输代码；README 明确标注 No MCP。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "mcpManager 使用 StdioClientTransport 拉起本地 MCP 子进程，经 stdin/stdout JSON-RPC 完成初始化、tools/list 与 tools/call，并捕获 stderr 日志。",
+          "evidence": "packages/agent-sdk/src/managers/mcpManager.ts\npackages/agent-sdk/src/types/mcp.ts\ndocs/specs/ecosystem/mcp.md\npackages/agent-sdk/package.json"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "MCP 客户端基于 rmcp。config/src/mcp_types.rs 定义 Stdio 与 StreamableHttp 两种传输；stdio 场景由 stdio_server_launcher.rs 启动子进程，local_stdio_transport.rs 处理 JSON-RPC 帧、stderr 日志与进程退出。启动时完成 initialize 握手与能力协商，随后把 tools/resources 注册进工具清单（mcp_resource.rs、codex-mcp/resource_client.rs）。调用经 ToolRouter 与审批/沙箱流程，错误与超时按配置重试。stdio 服务器生命周期绑定会话，会话结束或插件卸载时终止进程，避免僵尸进程与凭证泄漏。",
+          "evidence": "codex-rs/rmcp-client/src/stdio_server_launcher.rs\ncodex-rs/rmcp-client/src/local_stdio_transport.rs\ncodex-rs/config/src/mcp_types.rs\ncodex-rs/core/src/tools/handlers/mcp_resource.rs"
+        },
+        "opencode": {
+          "detailMd": "stdio 传输在 mcp/index.ts。`createClient()` 构造 MCP SDK Client，注册 `ListRootsRequestSchema` 返回当前目录的 file:// root；配置项出现 command 时走 `StdioClientTransport({ command, args, env })`，通过 `connectTransport()` 在超时内 connect，失败则关闭 transport 并标记 failed 状态。连接成功后统一收集 tools/prompts/resources，工具名经 McpCatalog 清洗（server 前缀+本地名）后注入 ToolRegistry，权限通过 permission 规则按工具名过滤。远程场景按 StreamableHTTP 再 SSE 顺序尝试并支持 OAuth；stdio 进程 pid 可被记录以便取消。客户端能力只声明 roots，sampling/elicitation/tasks 暂未开启。整体实现依托官方 SDK，支持工具列表变更通知与状态事件。",
+          "evidence": "packages/opencode/src/mcp/index.ts\npackages/opencode/src/mcp/catalog.ts\npackages/opencode/src/tool/registry.ts"
+        },
+        "pi": {
+          "detailMd": "Pi 没有 MCP 客户端：仓库无 @modelcontextprotocol/sdk 依赖，也没有 stdio/HTTP 传输、服务器配置或资源层代码；README 与 docs/usage.md 明确列出 “No MCP”，将其归为扩展领域。\n\n因此无法直接连接本地 MCP server。理论上可用扩展的 registerTool 与 tool_call 钩子自行实现桥接（启动子进程、转发 JSON-RPC），但官方未提供 stdio 实现或服务器配置格式，示例目录也没有 MCP 桥接，故判定为不支持。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "detailMd": "`managers/mcpManager.ts` 基于 @modelcontextprotocol/sdk 统一管理三种传输：StdioClientTransport 启动子进程并通过 stdin/stdout 交换 JSON-RPC，SSEClientTransport 与 StreamableHTTPClientTransport 连接远程端点，三者共用同一套 Client 初始化、工具发现与调用封装。\n\n配置里的 stdio server 记录 command/args/env，管理器负责拉起进程、捕获 stderr 写入日志、在退出时清理；连接采用惰性拨号（beginPendingDials），首次需要工具时才建立，避免启动时阻塞。工具列表按 server 做快照缓存，只有服务器真正失败才丢弃，减少重复 tools/list 往返；每个 server 的 instructions 会被截断并作为公告注入会话。\n\n工具名做命名空间隔离，调用错误转成 tool_result 文本回灌模型，进程崩溃则标记 server 不可用并触发重连或禁用策略。",
+          "evidence": "packages/agent-sdk/src/managers/mcpManager.ts\npackages/agent-sdk/src/types/mcp.ts\npackages/agent-sdk/package.json\ndocs/specs/ecosystem/mcp.md"
+        }
+      }
+    },
+    {
+      "key": "mcp.remote",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "支持 Streamable HTTP 远程 MCP，含重试、会话与传输管理。",
+          "evidence": "codex-rs/rmcp-client/src/streamable_http_retry.rs\ncodex-rs/config/src/mcp_types.rs\ncodex-rs/rmcp-client/src/local_stdio_transport.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "同一模块支持 StreamableHTTP 与 SSE 两种远程传输，按顺序尝试连接并处理鉴权失败；远程 server 可配置 headers/超时。",
+          "evidence": "packages/opencode/src/mcp/index.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无 HTTP/SSE/Streamable HTTP MCP 传输实现；与 stdio 一样整体缺失。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "同时支持 SSEClientTransport 与 StreamableHTTPClientTransport，远程 server 可配 url 与静态 headers，工具发现与调用和 stdio 共用一套封装。",
+          "evidence": "packages/agent-sdk/src/managers/mcpManager.ts\npackages/agent-sdk/src/types/mcp.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "mcp.oauth",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "远程 MCP 支持 OAuth 授权、回调与令牌刷新，凭证可存于系统钥匙串。",
+          "evidence": "codex-rs/rmcp-client/src/oauth.rs\ncodex-rs/model-provider-info/src/oauth_session.rs\ncodex-rs/config/src/mcp_types.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "mcp/oauth-provider.ts 与 auth.ts 实现远程 MCP 的 OAuth 授权码流程、回调端口、令牌存储与 finishAuth 刷新，遇 UnauthorizedError 时触发登录。",
+          "evidence": "packages/opencode/src/mcp/oauth-provider.ts\npackages/opencode/src/mcp/auth.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无 MCP OAuth 授权或令牌刷新流程；现有 OAuth 仅用于模型 Provider 登录。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/ai/src/auth/oauth/pkce.ts"
+        },
+        "wave-agent": {
+          "status": "no",
+          "notes": "远程 MCP 仅支持配置静态 headers，没有 OAuth 发现、授权码流程或令牌刷新实现。",
+          "evidence": "packages/agent-sdk/src/types/mcp.ts\npackages/agent-sdk/src/managers/mcpManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "mcp.resources",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "支持 MCP resources 与通知/elicitation，但未见 MCP prompts 的原生集成与展示。",
+          "evidence": "codex-rs/codex-mcp/src/resource_client.rs\ncodex-rs/core/src/tools/handlers/mcp_resource.rs\ncodex-rs/core/src/tools/handlers/mcp.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "MCP 服务暴露 prompts/resources 列表、getPrompt、readResource，并把文本或受支持二进制资源转换为消息 part；工具列表变更通知通过事件同步。",
+          "evidence": "packages/opencode/src/mcp/index.ts\npackages/opencode/src/session/prompt.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "未实现 MCP resources、prompts、通知等能力；工具生态完全依赖内置工具与扩展。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "status": "no",
+          "notes": "只集成 MCP 工具；未调用 resources/list、resources/read、prompts/list，也不处理资源/提示变更通知。",
+          "evidence": "packages/agent-sdk/src/managers/mcpManager.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent.subagents",
+      "overviewMd": "子智能体派生独立上下文执行子任务并汇总结果，是并行与隔离任务的主要手段。对比重点在上下文隔离、工具与权限继承、并发与后台执行、结果回传机制，以及是否为内置能力。",
+      "diffSummaryMd": "Codex 有完整的子代理注册、消息邮箱与并发准入，spawn/send/wait/close 工具可配模型角色与工具集，并继承审批与沙箱；opencode 的 TaskTool 按 subagent_type 创建子会话，权限收窄、task_id 续跑、background 后台执行与完成通知；wave-agent 的 subagentManager 为子代理创建独立 aiManager、预算与 readFileState，内置 Explore/general-purpose/plan/vision，支持 markdown 自定义与 /subtask fork；pi 核心无子代理 API，官方示例扩展通过 spawn 新 pi 进程实现 single/parallel/chain。前三家是一等公民能力，pi 属于扩展层实现。",
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "子代理有独立线程与上下文，通过 spawn/send/wait/close 工具调用，可配置模型角色与工具集，结果回传主会话。",
+          "evidence": "codex-rs/core/src/agent/mod.rs\ncodex-rs/core/src/agent/control.rs\ncodex-rs/core/src/tools/handlers/multi_agents.rs\ncodex-rs/core/src/tools/handlers/multi_agents_v2.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "task 工具按 subagent_type 创建独立子会话，继承/收窄权限后运行 promptOps.prompt，把结果以 task_result 标签回灌；支持 task_id 续跑与 background 后台执行。",
+          "evidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/agent/agent.ts\npackages/opencode/src/agent/subagent-permissions.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "核心无子代理 API；官方 subagent 示例扩展派生独立 pi 进程（--mode json -p --no-session），支持 single/parallel/chain 并汇总文本结果。",
+          "evidence": "packages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/examples/extensions/subagent/agents.ts\npackages/coding-agent/examples/extensions/subagent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "subagentManager 与 agentTool 派生独立上下文的子代理，内置 Explore/general-purpose/plan/vision，支持自定义 markdown 代理与 /subtask fork。",
+          "evidence": "packages/agent-sdk/src/managers/subagentManager.ts\npackages/agent-sdk/src/tools/agentTool.ts\npackages/agent-sdk/src/builtin/subagents.ts\npackages/agent-sdk/src/utils/subagentParser.ts"
+        }
+      },
+      "details": {
+        "codex": {
+          "detailMd": "子智能体由 core/src/agent 提供。agent/registry.rs 与 control.rs 管理子代理注册、状态与消息邮箱；spawn/wait/send/close 通过 multi_agents 工具暴露给主模型（tools/handlers/multi_agents.rs、multi_agents_v2.rs）。每个子代理有独立 thread 与上下文，可配置模型角色（role.rs、child_config.rs）与工具集，结果以消息回传主会话。agent/host 负责并发准入、用量统计与会话读取。子代理继承审批与沙箱策略，不能越权；主循环通过 mailbox 异步收取完成通知，实现并行子任务。",
+          "evidence": "codex-rs/core/src/agent/control.rs\ncodex-rs/core/src/agent/registry.rs\ncodex-rs/core/src/tools/handlers/multi_agents.rs\ncodex-rs/core/src/agent/role.rs"
+        },
+        "opencode": {
+          "detailMd": "子智能体由 tool/task.ts 的 TaskTool 实现。参数含 description、prompt、subagent_type 与可选 task_id/command/background。执行时先经 `deriveSubagentSessionPermission` 从父代理权限派生并收窄子会话规则，创建带 parentID 的子 Session，然后通过注入的 `promptOps.prompt` 在子会话中运行同一套 runLoop，工具调用仍受权限询问约束。结果按 `<task id state><task_result>` 结构返回给父模型；task_id 可恢复同一子会话继续，background=true 时交给 BackgroundJob，完成后通过 inject 向父会话插入完成/错误消息实现通知。内置 general/explore 子代理以及用户自定义 agent（mode=subagent）都可被选择，描述列表由 ToolRegistry.describeTask 按权限过滤生成。子任务与主循环共用同一 session/processor 流程，因此天然继承流式、压缩与权限能力。",
+          "evidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/agent/agent.ts\npackages/opencode/src/agent/subagent-permissions.ts\npackages/opencode/src/background/job.ts"
+        },
+        "pi": {
+          "detailMd": "核心无子代理 API；官方示例 examples/extensions/subagent 注册 subagent 工具，支持 single、parallel（最多 8 任务、并发 4）与 chain（用 {previous} 串联）三种模式。它从 .pi/agents 与 ~/.pi/agent/agents 的 Markdown frontmatter 读取 name/description/tools/model，并把任务写入临时提示文件。\n\n执行时 spawn 新的 pi 进程：--mode json -p --no-session，并可带 --model、--thinking、--tools、--append-system-prompt，父会话只接收最终文本结果，从而实现独立上下文。该能力需手动安装扩展，故为部分支持。",
+          "evidence": "packages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/examples/extensions/subagent/agents.ts\npackages/coding-agent/examples/extensions/subagent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "detailMd": "子智能体由 `managers/subagentManager.ts` 统一调度，`tools/agentTool.ts` 暴露给主模型。子代理拥有独立的消息列表、上下文与工具集，启动时创建自己的 aiManager（携带独立的 BackgroundTaskManager、readFileState 与 turnBudget），因此不会污染主会话；结果以最终文本加 usage 的形式回传，父级据此计费。\n\n`builtin/subagents.ts` 定义 Explore、general-purpose、plan、vision 等内置代理：plan 用 model: inherit，vision 指定 visionModel，工具白名单各不相同；用户与插件可在 `.wave/agents` 用 markdown frontmatter 声明自定义子代理，由 utils/subagentParser 解析。\n\nfork 形态（/subtask）会复制起始历史并挂接父级 reversion 状态，普通形态从空上下文开始。并发由 workflow/foreground 任务管理器限制，长任务可转入后台并在完成时通知。",
+          "evidence": "packages/agent-sdk/src/managers/subagentManager.ts\npackages/agent-sdk/src/tools/agentTool.ts\npackages/agent-sdk/src/builtin/subagents.ts\npackages/agent-sdk/src/utils/subagentParser.ts"
+        }
+      }
+    },
+    {
+      "key": "agent.workflows",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "提供子代理 spawn/send/wait 组合与消息板，可手工编排多步任务，但没有声明式工作流 DSL。",
+          "evidence": "codex-rs/core/src/agent/control.rs\ncodex-rs/core/src/tools/handlers/multi_agents.rs\ncodex-rs/core/src/agent/registry.rs"
+        },
+        "opencode": {
+          "status": "no",
+          "notes": "没有声明式或脚本化的多步骤/多代理工作流引擎；多代理能力仅限于 task 工具派生单个子代理，编排需由模型在对话中自行串接。",
+          "evidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/session/prompt.ts\npackages/opencode/src/background/job.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "无声明式工作流引擎；示例 subagent 扩展提供 single/parallel/chain 三种编排，chain 用 {previous} 串联上一步结果。",
+          "evidence": "packages/coding-agent/examples/extensions/subagent/index.ts\npackages/coding-agent/examples/extensions/subagent/README.md\npackages/coding-agent/docs/usage.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "workflow 子系统提供脚本运行时、注册表、并发限制与 journal，workflowTool 让模型启动/查询多步骤工作流，CLI 展示运行进度。",
+          "evidence": "packages/agent-sdk/src/workflow/scriptRuntime.ts\npackages/agent-sdk/src/workflow/workflowRegistry.ts\npackages/agent-sdk/src/tools/workflowTool.ts\ndocs/specs/multi-agent/workflow.md"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent.background-notify",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "后台子代理完成后经 mailbox 回传主会话，状态与结果在 TUI 汇总，主循环可异步取回。",
+          "evidence": "codex-rs/core/src/agent/control/mailbox.rs\ncodex-rs/core/src/agent/status.rs\ncodex-rs/core/src/tools/handlers/multi_agents_v2.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "后台 task 通过 BackgroundJob 运行，wait 完成后由 notifyBackgroundResult 向父会话注入 completed/error 合成消息，实现自动通知，无需轮询。",
+          "evidence": "packages/opencode/src/tool/task.ts\npackages/opencode/src/background/job.ts\npackages/core/src/background-job.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无后台代理或任务完成通知机制；所有工具调用都在当前轮次内同步完成。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/usage.md\npackages/coding-agent/src/core/tools/bash.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "后台任务/子代理完成后经通知队列与 notificationXml 注入主会话，CLI 通知面板与 remote 推送提示用户取回结果。",
+          "evidence": "packages/agent-sdk/src/utils/notificationXml.ts\npackages/agent-sdk/src/managers/backgroundTaskManager.ts\npackages/agent-sdk/src/services/hostNotice.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent.cron",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "no",
+          "notes": "未见 cron、定时器或周期调度器实现，任务仅由用户或外部调用触发。",
+          "evidence": "codex-rs/cli/src/main.rs\ncodex-rs/app-server-daemon/src/lib.rs"
+        },
+        "opencode": {
+          "status": "no",
+          "notes": "没有内置 cron/间隔调度器自动触发会话；GitHub Action 虽有 schedule 事件支持，但那是外部 CI 触发，不属于应用内定时任务。",
+          "evidence": "packages/opencode/src/background/job.ts\npackages/opencode/src/cli/cmd/github.ts"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无内置 cron 或定时触发；扩展可在进程内自行调度，但没有官方任务调度器或持久定时器。",
+          "evidence": "packages/coding-agent/README.md\npackages/coding-agent/docs/extensions.md\npackages/coding-agent/src/core/agent-session.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "cronManager 基于 cron-parser 调度定时任务，提供 CronCreate/List/Delete 工具与租约锁，任务结果回到会话或后台任务系统。",
+          "evidence": "packages/agent-sdk/src/managers/cronManager.ts\npackages/agent-sdk/src/tools/cronCreateTool.ts\npackages/agent-sdk/src/tools/cronListTool.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent.remote-control",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "remote_control_cmd 支持远程配对与接管会话，复用 app-server 与 daemon 能力。",
+          "evidence": "codex-rs/cli/src/remote_control_cmd.rs\ncodex-rs/app-server/src/lib.rs\ncodex-rs/app-server-protocol/src/lib.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "`opencode attach <url>` 可让另一台设备上的 TUI 连接运行中的 server 接管/查看会话，支持 basic auth 与 continue/session；但没有专门的手机端远程控制应用。",
+          "evidence": "packages/opencode/src/cli/cmd/attach.ts\npackages/opencode/src/server/server.ts\npackages/web/src/content/docs/server.mdx"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无手机或其他设备远程接管能力；实验性 server/client 仅支持本地 unix socket。",
+          "evidence": "packages/server/README.md\npackages/coding-agent/src/modes/rpc/rpc-mode.ts\npackages/coding-agent/docs/rpc.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "remoteControlService 与 relayClient 通过 WebSocket 中继把运行中的 CLI 会话暴露给手机端页面，支持查看、发消息与恢复。",
+          "evidence": "packages/code/src/remote/remoteControlService.ts\npackages/code/src/remote/relayClient.ts\ndocs/specs/remote/remote-control.md"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "agent.ci",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "headless exec 可用于 CI，仓库含 Codex bot 配置，但未见官方 GitHub Action 或 CI 集成包。",
+          "evidence": "codex-rs/exec/src/lib.rs\n.github/codex/home/config.toml\ndocs/exec.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "提供官方 GitHub Action（/opencode 评论触发解释、修复、审查、开 PR）与 CLI github 处理器，支持 issue/PR/review 注释与 schedule/workflow_dispatch；GitLab 也有 provider 集成。",
+          "evidence": "github/action.yml\npackages/opencode/src/cli/cmd/github.ts\npackages/web/src/content/docs/github.mdx"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "无官方 GitHub Action 或 CI 集成；可通过 -p/--mode json 在 CI 调用，evals 包提供模型行为回归测试。",
+          "evidence": "packages/coding-agent/docs/json.md\npackages/evals/src/pi-harness.ts\npackages/evals/src/smoke.eval.ts\npackages/coding-agent/src/modes/print-mode.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "提供可复用的 GitHub Actions 工作流（wave-review.yml，workflow_call）与 GitLab CI 模板，以 headless JSON 输出在 CI 中执行审查。",
+          "evidence": ".github/workflows/wave-review.yml\nci/gitlab-ci.yml\ndocs/specs/automation/ci-integration.md"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "config.layered",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "全局、项目、目录与 CLI 配置分层合并，profile 与 requirements 可覆盖，形成确定的优先级。",
+          "evidence": "codex-rs/config/src/lib.rs\ncodex-rs/config/src/config_requirements.rs\ndocs/config.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "Config 服务按全局 config.json/opencode.json(c)、OPENCODE_CONFIG、项目/目录级配置、托管配置逐层 mergeDeep 合并（数组拼接），支持变量替换与 plugin 来源追踪。",
+          "evidence": "packages/opencode/src/config/config.ts\npackages/core/src/config.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "SettingsManager 合并全局 ~/.pi/agent/settings.json 与项目 .pi/settings.json，CLI 参数与环境变量再覆盖，项目配置受信任门控。",
+          "evidence": "packages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/docs/settings.md\npackages/coding-agent/src/cli/args.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "配置按内置默认→用户 ~/.wave/settings.json→项目 .wave/settings.json→.wave/settings.local.json→托管层逐级合并，数组与对象有明确合并规则。",
+          "evidence": "packages/agent-sdk/src/services/configurationService.ts\npackages/agent-sdk/src/utils/configPaths.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "config.hot-reload",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "运行时可刷新云配置包并有文件监听，但 config.toml 变更不保证自动生效。",
+          "evidence": "codex-rs/core/src/session/config_refresh.rs\ncodex-rs/config/src/cloud_config_bundle.rs\ncodex-rs/file-watcher/src/lib.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "配置通过 cachedInvalidateWithTTL 缓存，API 的 update/updateGlobal 写盘后会 invalidate 使新配置生效；但没有文件系统 watcher，外部手工编辑不会在运行中即时热加载。",
+          "evidence": "packages/opencode/src/config/config.ts\npackages/core/src/config/watcher.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "支持 /reload 重新加载设置、资源与扩展并触发 session_start(reason=reload)，主题可热更新；无文件监听式自动重载。",
+          "evidence": "packages/coding-agent/src/core/agent-session.ts\npackages/coding-agent/src/core/resource-loader.ts\npackages/coding-agent/docs/extensions.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "fileWatcher 监听配置文件变化，liveConfigManager 更新实时配置；每轮开始时 pin 配置快照，保证单轮一致并让下轮生效。",
+          "evidence": "packages/agent-sdk/src/managers/liveConfigManager.ts\npackages/agent-sdk/src/services/fileWatcher.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "config.managed",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "托管 requirements/managed config 可由组织下发并强制策略覆盖，启动时校验。",
+          "evidence": "codex-rs/config/src/config_requirements.rs\ncodex-rs/config/src/cloud_config_bundle.rs\ndocs/config.md"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "config/managed.ts 读取 macOS MDM（managed plist）与 /etc/opencode、ProgramData 等系统目录的托管配置，组织级策略可覆盖用户配置。",
+          "evidence": "packages/opencode/src/config/managed.ts\npackages/web/src/content/docs/enterprise.mdx"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无组织级托管配置、强制策略或下发通道；仅全局与项目两级用户配置。",
+          "evidence": "packages/coding-agent/docs/settings.md\npackages/coding-agent/src/core/settings-manager.ts\npackages/coding-agent/docs/security.md"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "remoteSettingsService 拉取组织托管设置（SSO 门控、校验和缓存），按 key 覆盖本地配置，marketplaces/enabledPlugins 等可由组织强制。",
+          "evidence": "packages/agent-sdk/src/services/remoteSettingsService.ts\ndocs/specs/enterprise/server-managed-config.md"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "obs.otel",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "内置 OpenTelemetry 初始化与导出，可将链路与指标发送到配置的 OTLP 端点。",
+          "evidence": "codex-rs/otel/src/lib.rs\ncodex-rs/core/src/otel_init.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "LLM 调用与代理生成可通过 experimental.openTelemetry 开关接入 @effect/opentelemetry tracer 导出 span；默认关闭，属于实验能力。",
+          "evidence": "packages/opencode/src/session/llm.ts\npackages/opencode/src/agent/agent.ts"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "telemetry 包定义 vendor-neutral TelemetryContext/Span 与内存实现，不含 exporter；应用需自行接 OpenTelemetry、Sentry 等后端。",
+          "evidence": "packages/telemetry/src/index.ts\npackages/telemetry/README.md\npackages/telemetry/src/memory.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "telemetry 模块惰性加载 OpenTelemetry SDK，通过 OTLP HTTP 导出指标与日志，支持 otelHeadersHelper，且保护 stdout 不被污染。",
+          "evidence": "packages/agent-sdk/src/telemetry/instrumentation.ts\npackages/agent-sdk/src/telemetry/metrics.ts\npackages/agent-sdk/src/telemetry/events.ts\ndocs/specs/enterprise/opentelemetry.md"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "obs.usage",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "yes",
+          "notes": "统计并展示 token 消耗、上下文剩余与工具调用信息，状态栏和事件流均可读取。",
+          "evidence": "codex-rs/analytics/src/facts.rs\ncodex-rs/core/src/tools/handlers/get_context_remaining.rs\ncodex-rs/codex-api/src/common.rs"
+        },
+        "opencode": {
+          "status": "yes",
+          "notes": "`opencode stats` 汇总会话数、消息数、token（输入/输出/推理/缓存）与费用、工具与模型用量；单次响应也记录 cost/tokens 并展示。",
+          "evidence": "packages/opencode/src/cli/cmd/stats.ts\npackages/opencode/src/session/session.ts"
+        },
+        "pi": {
+          "status": "yes",
+          "notes": "usage-totals 汇总各模型 token 与费用，cache-stats 统计缓存命中与浪费，footer 实时显示上下文占用与花费。",
+          "evidence": "packages/coding-agent/src/core/usage-totals.ts\npackages/coding-agent/src/core/cache-stats.ts\npackages/coding-agent/src/modes/interactive/components/footer.ts"
+        },
+        "wave-agent": {
+          "status": "yes",
+          "notes": "usage 回调记录每次请求与压缩的 token，turnBudgetLedger 汇总轮次消耗，CLI usageSummary 与 /context 展示用量与上下文占比。",
+          "evidence": "packages/code/src/utils/usageSummary.ts\npackages/agent-sdk/src/managers/turnBudgetLedger.ts\npackages/agent-sdk/src/services/contextBreakdown.ts"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "obs.eval",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "有快照与场景回归测试套件保障行为，但缺少对外评测集或独立评测框架。",
+          "evidence": "codex-rs/core/tests/suite/snapshots/all__suite__compact__manual_compact_with_history_shapes.snap\ncodex-rs/core/tests/suite/apply_patch_cli.rs\ncodex-rs/core/tests/all.rs"
+        },
+        "opencode": {
+          "status": "no",
+          "notes": "未发现官方评测集、回归评测框架或 eval 命令；仓库只有单元/集成测试与用量统计，不提供衡量代理能力的评测流水线。",
+          "evidence": "packages/opencode/src/cli/cmd/stats.ts\npackages/web/src/content/docs/cli.mdx"
+        },
+        "pi": {
+          "status": "partial",
+          "notes": "packages/evals 基于 vitest-evals 提供模型驱动的行为评测（smoke、extensions），不是完整官方基准集。",
+          "evidence": "packages/evals/src/pi-harness.ts\npackages/evals/src/smoke.eval.ts\npackages/evals/src/extensions.eval.ts\npackages/evals/README.md"
+        },
+        "wave-agent": {
+          "status": "no",
+          "notes": "仓库没有官方评测集、回归基准或 eval 运行器；CI 工作流只执行代码审查，不做能力评测。",
+          "evidence": "docs/specs/automation/ci-integration.md\n.github/workflows/wave-review.yml"
+        }
+      },
+      "details": {}
+    },
+    {
+      "key": "config.enterprise-auth",
+      "overviewMd": null,
+      "diffSummaryMd": null,
+      "support": {
+        "codex": {
+          "status": "partial",
+          "notes": "有 Enterprise 计划、托管策略与审计基础，但仓库内未见 SSO/SCIM 的具体实现。",
+          "evidence": "docs/authentication.md\ncodex-rs/config/src/config_requirements.rs\ncodex-rs/analytics/src/facts.rs"
+        },
+        "opencode": {
+          "status": "partial",
+          "notes": "仓库未实现 SSO/SCIM/审计；提供 MDM 托管配置、provider 级 policies 与自托管 share 应用，Enterprise SSO 依赖中央配置和外部身份/网关。",
+          "evidence": "packages/opencode/src/config/managed.ts\npackages/core/src/policy.ts\npackages/web/src/content/docs/enterprise.mdx\npackages/enterprise/src/routes/share.tsx"
+        },
+        "pi": {
+          "status": "no",
+          "notes": "无 SSO、SCIM、审计等企业身份能力；鉴权仅为模型 Provider 的 API Key/OAuth。",
+          "evidence": "packages/coding-agent/docs/settings.md\npackages/coding-agent/docs/security.md\npackages/ai/src/auth/resolve.ts"
+        },
+        "wave-agent": {
+          "status": "partial",
+          "notes": "具备企业 SSO 登录、组织托管配置与 OTel 审计导出；未发现 SCIM 用户同步或细粒度企业权限管理。",
+          "evidence": "packages/agent-sdk/src/services/authService.ts\npackages/agent-sdk/src/services/remoteSettingsService.ts\ndocs/specs/enterprise/sso-auth.md"
+        }
+      },
+      "details": {}
+    }
+  ]
+}
