@@ -2,6 +2,10 @@
 
 持续跟踪主流 coding agent harness 的提交与发版，自动分类、点评、评级并按天归档；同时维护一份可演进的「功能矩阵 + 实现细节对比」基线。首批跟踪 **Codex、OpenCode、Pi、Wave Agent** 四个仓库。
 
+![Zodiac 概览](docs/screenshots/01-overview.png)
+
+> 完整的逐页操作说明见 [docs/usage.md](docs/usage.md)（含各页面截图）。
+
 ## 功能
 
 - **功能矩阵**：13 个模块、85 个功能点，按 ✓ / ◐ / ✗ / ? 标注各 harness 的支持状态，支持搜索、模块筛选与「仅看差异」。
@@ -11,6 +15,16 @@
 - **按天归档**：每个 harness 每天聚合提交、分类统计、发版记录与重点点评。
 - **基线演进**：人工编辑支持状态或确认新功能候选后，自动生成带日期的基线版本与功能历史，可导出 JSON / Markdown。
 - **新功能候选**：从 feature 类提交中提炼候选，自动对其它 harness 做目录相似度与提交历史交叉检查，人工接受或驳回。
+
+## 界面预览
+
+| 功能矩阵 | 实现细节对比 |
+| --- | --- |
+| ![功能矩阵](docs/screenshots/02-features.png) | ![实现细节对比](docs/screenshots/04-compare-tool-call-loop.png) |
+| **日更归档** | **新功能候选** |
+| ![日更归档](docs/screenshots/05-daily.png) | ![新功能候选](docs/screenshots/09-candidates.png) |
+
+更多截图与逐页操作说明见 [docs/usage.md](docs/usage.md)。
 
 ## 技术栈
 
@@ -96,7 +110,7 @@ pnpm reanalyze --harness codex      # 只重算某个 harness
 ```bash
 pnpm lint        # Biome（格式 + 规则）
 pnpm typecheck
-pnpm test        # Vitest，208 个用例，src/lib 覆盖率门槛 80%
+pnpm test        # Vitest，213 个用例，src/lib 覆盖率门槛 80%
 pnpm e2e         # Playwright，首次运行前执行 pnpm exec playwright install chromium
 ```
 
