@@ -8,6 +8,8 @@ export interface SettingsInitial {
   aiModel: string;
   aiMaxPerSync: number;
   timezone: string;
+  exploreEngine: "api" | "claude-code";
+  claudeCodeCommand: string;
 }
 
 interface SettingsFormProps {
@@ -32,11 +34,16 @@ export default function SettingsForm({ initial }: SettingsFormProps) {
   const [aiModel, setAiModel] = useState(initial.aiModel);
   const [aiMaxPerSync, setAiMaxPerSync] = useState(String(initial.aiMaxPerSync));
   const [timezone, setTimezone] = useState(initial.timezone);
+  const [exploreEngine, setExploreEngine] = useState(initial.exploreEngine);
+  const [claudeCodeCommand, setClaudeCodeCommand] = useState(initial.claudeCodeCommand);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
 
+  const commandMissing = exploreEngine === "claude-code" && claudeCodeCommand.trim().length === 0;
+
   const save = async () => {
+    if (commandMissing) return;
     setSaving(true);
     setMessage(null);
     setIsError(false);
@@ -49,6 +56,8 @@ export default function SettingsForm({ initial }: SettingsFormProps) {
           aiModel: aiModel.trim(),
           aiMaxPerSync: Number(aiMaxPerSync) || 0,
           timezone,
+          exploreEngine,
+          claudeCodeCommand: claudeCodeCommand.trim(),
         }),
       });
       const payload = (await response.json()) as { success: boolean; error?: string | null };
@@ -137,14 +146,66 @@ export default function SettingsForm({ initial }: SettingsFormProps) {
           </select>
           <p className="mt-1 text-[11px] text-muted">默认 Asia/Shanghai，可通过 ZODIAC_TZ 覆盖。</p>
         </div>
+
+        <div className="border-t border-line pt-3 md:col-span-2">
+          <p className="text-sm font-medium">功能探索引擎</p>
+          <p className="mt-0.5 text-[11px] text-muted">
+            API 模式由 Claude 通过工具调用探索；本地模式直接调用已登录的 Claude Code CLI，不消耗
+            ANTHROPIC_API_KEY。
+          </p>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="settings-explore-engine">
+            探索引擎
+          </label>
+          <select
+            id="settings-explore-engine"
+            className="input"
+            value={exploreEngine}
+            onChange={(event) =>
+              setExploreEngine(event.target.value === "claude-code" ? "claude-code" : "api")
+            }
+          >
+            <option value="api">Anthropic API（默认）</option>
+            <option value="claude-code">本地 Claude Code CLI</option>
+          </select>
+          <p className="mt-1 text-[11px] text-muted">
+            本地模式需先安装并登录 Claude Code，失败时自动回退到离线检索。
+          </p>
+        </div>
+
+        <div>
+          <label className="label" htmlFor="settings-claude-command">
+            Claude Code 命令
+          </label>
+          <input
+            id="settings-claude-command"
+            className="input font-mono text-xs"
+            value={claudeCodeCommand}
+            onChange={(event) => setClaudeCodeCommand(event.target.value)}
+            placeholder="claude"
+          />
+          <p className="mt-1 text-[11px] text-muted">
+            仅为命令名或绝对路径（不经过 shell）；运行时使用只读受限模式与临时快照。
+          </p>
+        </div>
       </div>
 
       <div className="mt-4 flex items-center gap-3">
-        <button type="button" className="btn btn-primary" onClick={save} disabled={saving}>
+        <button
+          type="button"
+          className="btn btn-primary"
+          onClick={save}
+          disabled={saving || commandMissing}
+        >
           {saving ? "保存中…" : "保存设置"}
         </button>
         {message ? (
           <span className={`text-xs ${isError ? "text-danger" : "text-muted"}`}>{message}</span>
+        ) : null}
+        {commandMissing ? (
+          <span className="text-xs text-danger">本地模式需要填写 Claude Code 命令。</span>
         ) : null}
       </div>
     </section>

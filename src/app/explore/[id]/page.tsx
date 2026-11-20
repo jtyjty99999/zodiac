@@ -20,13 +20,15 @@ export const metadata = { title: "探索详情" };
 const ENGINE_LABELS: Record<ExplorationEngine, string> = {
   heuristic: "启发式检索",
   "heuristic+claude": "启发式 + Claude 综合",
+  claude: "Claude 自主探索",
+  "claude-code": "本地 Claude Code 探索",
 };
 
 const EVIDENCE_STATUS_LABELS: Record<ExplorationHarnessEvidence["status"], string> = {
-  ok: "已检索",
+  ok: "已探索",
   empty: "未命中",
   missing: "镜像未同步",
-  error: "检索失败",
+  error: "探索失败",
 };
 
 const SUPPORT_LABELS: Record<SupportStatus, string> = {
@@ -39,7 +41,7 @@ const SUPPORT_LABELS: Record<SupportStatus, string> = {
 function HarnessEvidence({ entry }: { entry: ExplorationHarnessEvidence }) {
   const related = entry.status === "ok" || entry.status === "empty";
   return (
-    <details className="rounded-lg border border-line" open={entry.files.length > 0}>
+    <details className="rounded-lg border border-line">
       <summary className="flex cursor-pointer flex-wrap items-center gap-2 px-3 py-2 text-xs">
         <span className="font-medium">{entry.name}</span>
         <span className="chip font-mono">{entry.slug}</span>
@@ -192,41 +194,50 @@ export default async function ExplorationDetailPage({
       ) : null}
 
       {exploration.reportMd ? (
-        <SectionCard title="对比报告" className="mb-4">
+        <SectionCard title="分析报告" className="mb-4">
           <MarkdownView content={exploration.reportMd} />
         </SectionCard>
       ) : isRunning ? (
-        <SectionCard title="对比报告" className="mb-4">
+        <SectionCard title="分析报告" className="mb-4">
           <p className="text-xs text-muted">报告生成中，完成后页面会自动刷新。</p>
         </SectionCard>
       ) : null}
 
-      <SectionCard title="证据明细">
+      <SectionCard title="代码证据">
+        <p className="mb-2 text-[11px] text-muted">
+          报告是主要结论；这里保留原始代码片段供溯源，默认折叠。
+        </p>
         {evidence ? (
-          <div className="space-y-2">
-            {evidence.relatedFeatures.length > 0 ? (
-              <p className="text-[11px] text-muted">
-                功能目录支持情况：
-                {evidence.relatedFeatures
-                  .map((feature) => {
-                    const statuses = Object.entries(feature.support)
-                      .map(([slug, status]) => `${slug}=${SUPPORT_LABELS[status]}`)
-                      .join("，");
-                    return `${feature.name}（${statuses || "无记录"}）`;
-                  })
-                  .join("；")}
-              </p>
-            ) : null}
-            {evidence.harnesses.map((entry) => (
-              <HarnessEvidence key={`${entry.harnessId}:${entry.slug}`} entry={entry} />
-            ))}
-            {evidence.harnesses.length === 0 ? (
-              <p className="text-xs text-muted">没有证据记录。</p>
-            ) : null}
-            {evidence.truncated ? (
-              <p className="text-[11px] text-warning">部分证据因检索上限被截断。</p>
-            ) : null}
-          </div>
+          <details>
+            <summary className="cursor-pointer text-xs text-muted hover:text-ink">
+              展开代码证据（{evidence.harnesses.length} 个 harness ·{" "}
+              {evidence.harnesses.reduce((sum, entry) => sum + entry.totalFiles, 0)} 个文件）
+            </summary>
+            <div className="mt-2 space-y-2">
+              {evidence.relatedFeatures.length > 0 ? (
+                <p className="text-[11px] text-muted">
+                  功能目录支持情况：
+                  {evidence.relatedFeatures
+                    .map((feature) => {
+                      const statuses = Object.entries(feature.support)
+                        .map(([slug, status]) => `${slug}=${SUPPORT_LABELS[status]}`)
+                        .join("，");
+                      return `${feature.name}（${statuses || "无记录"}）`;
+                    })
+                    .join("；")}
+                </p>
+              ) : null}
+              {evidence.harnesses.map((entry) => (
+                <HarnessEvidence key={`${entry.harnessId}:${entry.slug}`} entry={entry} />
+              ))}
+              {evidence.harnesses.length === 0 ? (
+                <p className="text-xs text-muted">没有证据记录。</p>
+              ) : null}
+              {evidence.truncated ? (
+                <p className="text-[11px] text-warning">部分证据因检索上限被截断。</p>
+              ) : null}
+            </div>
+          </details>
         ) : (
           <p className="text-xs text-muted">
             {isRunning ? "证据正在构建。" : "本次探索没有留下证据数据。"}

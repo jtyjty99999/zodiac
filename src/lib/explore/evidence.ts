@@ -24,11 +24,18 @@ function mirrorReady(dir: string): boolean {
   return fs.existsSync(path.join(dir, "HEAD"));
 }
 
-async function harnessEvidence(
-  harness: Harness,
-  patterns: string[],
-): Promise<ExplorationHarnessEvidence> {
-  const base = {
+export interface HarnessSource {
+  harness: Harness;
+  dir: string;
+  rev: string;
+}
+
+export type HarnessSourceResult =
+  | { ok: true; source: HarnessSource }
+  | { ok: false; entry: ExplorationHarnessEvidence };
+
+export function baseEntry(harness: Harness): Omit<ExplorationHarnessEvidence, "status"> {
+  return {
     harnessId: harness.id,
     slug: harness.slug,
     name: harness.name,
@@ -38,33 +45,58 @@ async function harnessEvidence(
     files: [],
     note: null,
     truncated: false,
-  } satisfies Omit<ExplorationHarnessEvidence, "status">;
+  };
+}
 
+/**
+ * Resolves the mirror and revision for a harness. Missing mirrors and bad
+ * branches become recorded entries rather than exceptions.
+ */
+export async function resolveHarnessSource(harness: Harness): Promise<HarnessSourceResult> {
   const dir = mirrorPath(harness.slug);
   if (!mirrorReady(dir)) {
-    return { ...base, status: "missing", note: "本地镜像尚未同步，请先在 Harness 管理页同步" };
-  }
-
-  let rev: string;
-  try {
-    rev = await revParse(dir, harness.branch);
-  } catch (error) {
     return {
-      ...base,
-      status: "error",
-      note: `无法解析分支 ${harness.branch}：${cleanErrorMessage(error, 300)}`,
+      ok: false,
+      entry: {
+        ...baseEntry(harness),
+        status: "missing",
+        note: "本地镜像尚未同步，请先在 Harness 管理页同步",
+      },
     };
   }
 
   try {
-    const result = await searchMirror(dir, rev, patterns);
+    const rev = await revParse(dir, harness.branch);
+    return { ok: true, source: { harness, dir, rev } };
+  } catch (error) {
+    return {
+      ok: false,
+      entry: {
+        ...baseEntry(harness),
+        status: "error",
+        note: `无法解析分支 ${harness.branch}：${cleanErrorMessage(error, 300)}`,
+      },
+    };
+  }
+}
+
+async function harnessEvidence(
+  harness: Harness,
+  patterns: string[],
+): Promise<ExplorationHarnessEvidence> {
+  const resolved = await resolveHarnessSource(harness);
+  if (!resolved.ok) return resolved.entry;
+
+  const { source } = resolved;
+  try {
+    const result = await searchMirror(source.dir, source.rev, patterns);
     const status = result.files.length === 0 ? "empty" : "ok";
     return {
       harnessId: harness.id,
       slug: harness.slug,
       name: harness.name,
       status,
-      rev,
+      rev: source.rev,
       totalFiles: result.totalFiles,
       totalMatches: result.totalMatches,
       files: result.files,
@@ -77,11 +109,16 @@ async function harnessEvidence(
       truncated: result.truncated,
     };
   } catch (error) {
-    return { ...base, rev, status: "error", note: cleanErrorMessage(error, 500) };
+    return {
+      ...baseEntry(harness),
+      rev: source.rev,
+      status: "error",
+      note: cleanErrorMessage(error, 500),
+    };
   }
 }
 
-function relatedFeaturesFor(
+export function relatedFeaturesFor(
   db: Db,
   matchedFeatures: ExplorationMatchedFeature[],
   harnesses: Harness[],

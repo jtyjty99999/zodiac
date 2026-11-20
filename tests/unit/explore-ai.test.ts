@@ -112,7 +112,7 @@ describe("synthesizeExploration", () => {
     await withKey(async () => {
       const payload = {
         summaryMd: "Codex 通过 compact 压缩上下文。",
-        differencesMd: "只检索到 Codex。",
+        comparisonMd: "只检索到 Codex。",
         harnesses: [
           { slug: "codex", analysisMd: "Codex 在 src/context.rs:10 实现压缩。" },
           { slug: "codex", analysisMd: "重复条目" },
@@ -124,14 +124,14 @@ describe("synthesizeExploration", () => {
         clientFactory: () => fakeClient(`\`\`\`json\n${JSON.stringify(payload)}\n\`\`\``),
       });
       expect(result?.summaryMd).toBe("Codex 通过 compact 压缩上下文。");
-      expect(result?.differencesMd).toBe("只检索到 Codex。");
+      expect(result?.comparisonMd).toBe("只检索到 Codex。");
       expect(result?.harnesses).toEqual([
         { slug: "codex", analysisMd: "Codex 在 src/context.rs:10 实现压缩。" },
       ]);
     });
   });
 
-  test("normalizes an omitted differencesMd to null", async () => {
+  test("normalizes an omitted comparisonMd to null", async () => {
     await withKey(async () => {
       const payload = {
         summaryMd: "Codex 单独实现了压缩。",
@@ -141,7 +141,7 @@ describe("synthesizeExploration", () => {
         config: enabledConfig,
         clientFactory: () => fakeClient(JSON.stringify(payload)),
       });
-      expect(result?.differencesMd).toBeNull();
+      expect(result?.comparisonMd).toBeNull();
     });
   });
 

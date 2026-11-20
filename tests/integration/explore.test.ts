@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { setFeatureSupport, type Taxonomy, upsertTaxonomy } from "@/lib/db/repositories/catalog";
 import {
   createExploration,
@@ -94,7 +94,7 @@ describe("runExploration", () => {
     expect(stored?.engine).toBe("heuristic");
     expect(stored?.finishedAt).not.toBeNull();
     expect(stored?.reportMd).toContain("src/context/compact.ts");
-    expect(stored?.reportMd).toContain("已检索");
+    expect(stored?.reportMd).toContain("已探索");
     expect(stored?.reportMd).toContain("本报告由启发式检索生成");
 
     const evidence = stored?.evidence;
@@ -104,6 +104,277 @@ describe("runExploration", () => {
     expect(evidence?.harnesses[0].files[0].path).toBe("src/context/compact.ts");
     expect(evidence?.harnesses[0].files[0].snippets.length).toBeGreaterThan(0);
     expect(evidence?.relatedFeatures[0].support).toEqual({ "explore-main": "yes" });
+  });
+
+  test("uses AI exploration evidence when Claude explores successfully", async () => {
+    const repo = createTempRepo([
+      {
+        subject: "feat: long-running tasks",
+        files: {
+          "src/tasks/todo.ts": "export interface TodoItem {\n  text: string;\n}\n",
+        },
+      },
+    ]);
+    await ensureMirror({
+      slug: "explore-ai",
+      repoUrl: repo.url,
+      branch: "main",
+      allowLocalRepo: true,
+    });
+
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "explore-ai",
+      name: "Codex",
+      repoUrl: repo.url,
+    });
+    const exploration = beginExploration(db, {
+      proposition: "各 harness 如何处理长程任务",
+      harnessIds: [harness.id],
+    });
+
+    const aiEvidence: ExplorationEvidence = {
+      generatedAt: "2026-11-20T00:00:00.000Z",
+      patterns: ["todo", "checkpoint"],
+      harnesses: [
+        {
+          harnessId: harness.id,
+          slug: "explore-ai",
+          name: "Codex",
+          status: "ok",
+          rev: "a".repeat(40),
+          totalFiles: 1,
+          totalMatches: 1,
+          files: [
+            {
+              path: "src/tasks/todo.ts",
+              total: 1,
+              snippets: [{ line: 1, text: "1: export interface TodoItem {" }],
+            },
+          ],
+          note: null,
+          truncated: false,
+        },
+      ],
+      relatedFeatures: [],
+      truncated: false,
+    };
+
+    const explore = vi.fn(async () => ({
+      synthesis: {
+        summaryMd: "AI 结论：Codex 用 todo 列表跟踪任务。",
+        comparisonMd: null,
+        harnesses: [{ slug: "explore-ai", analysisMd: "见 src/tasks/todo.ts:1" }],
+      },
+      evidence: aiEvidence,
+      patterns: ["todo", "checkpoint"],
+    }));
+    const synth = vi.fn(async () => null);
+
+    await runExploration(db, exploration.id, {
+      config: { enabled: true, hasKey: true, model: "test-model", maxPerSync: 0 },
+      explore,
+      synth,
+    });
+
+    const stored = getExploration(db, exploration.id);
+    expect(stored?.status).toBe("success");
+    expect(stored?.phase).toBe("done");
+    expect(stored?.engine).toBe("claude");
+    expect(stored?.keywords).toEqual(["todo", "checkpoint"]);
+    expect(stored?.evidence?.patterns).toEqual(["todo", "checkpoint"]);
+    expect(stored?.reportMd).toContain("Claude 自主探索");
+    expect(stored?.reportMd).toContain("AI 结论");
+    expect(stored?.reportMd).toContain("src/tasks/todo.ts");
+    expect(explore).toHaveBeenCalledTimes(1);
+    // AI exploration supplies both evidence and synthesis; no heuristic fallback.
+    expect(synth).not.toHaveBeenCalled();
+  });
+
+  test("falls back to heuristic retrieval when AI exploration returns nothing", async () => {
+    const repo = createTempRepo([
+      {
+        subject: "feat: context",
+        files: {
+          "src/context/compact.ts": "export function compactContext(history: string[]) {}\n",
+        },
+      },
+    ]);
+    await ensureMirror({
+      slug: "explore-ai-fallback",
+      repoUrl: repo.url,
+      branch: "main",
+      allowLocalRepo: true,
+    });
+
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "explore-ai-fallback",
+      name: "Fallback",
+      repoUrl: repo.url,
+    });
+    const exploration = beginExploration(db, {
+      proposition: "context compaction",
+      harnessIds: [harness.id],
+    });
+
+    const explore = vi.fn(async () => null);
+    const synth = vi.fn(async () => ({
+      summaryMd: "基于检索证据的结论。",
+      comparisonMd: null,
+      harnesses: [{ slug: "explore-ai-fallback", analysisMd: "证据见 compact.ts。" }],
+    }));
+
+    await runExploration(db, exploration.id, {
+      config: { enabled: true, hasKey: true, model: "test-model", maxPerSync: 0 },
+      explore,
+      synth,
+    });
+
+    const stored = getExploration(db, exploration.id);
+    expect(stored?.status).toBe("success");
+    expect(stored?.engine).toBe("heuristic+claude");
+    expect(stored?.evidence?.harnesses[0].files[0].path).toBe("src/context/compact.ts");
+    expect(stored?.reportMd).toContain("启发式 + Claude");
+    expect(stored?.reportMd).toContain("基于检索证据的结论");
+    expect(explore).toHaveBeenCalledTimes(1);
+    expect(synth).toHaveBeenCalledTimes(1);
+  });
+
+  test("runs the local Claude Code engine when selected", async () => {
+    const repo = createTempRepo([
+      {
+        subject: "feat: long-running tasks",
+        files: {
+          "src/tasks/todo.ts": "export interface TodoItem {\n  text: string;\n}\n",
+        },
+      },
+    ]);
+    await ensureMirror({
+      slug: "explore-cli",
+      repoUrl: repo.url,
+      branch: "main",
+      allowLocalRepo: true,
+    });
+
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "explore-cli",
+      name: "Codex",
+      repoUrl: repo.url,
+    });
+    const exploration = beginExploration(db, {
+      proposition: "各 harness 如何处理长程任务",
+      harnessIds: [harness.id],
+    });
+
+    const localEvidence: ExplorationEvidence = {
+      generatedAt: "2026-11-20T00:00:00.000Z",
+      patterns: ["todo"],
+      harnesses: [
+        {
+          harnessId: harness.id,
+          slug: "explore-cli",
+          name: "Codex",
+          status: "ok",
+          rev: "b".repeat(40),
+          totalFiles: 1,
+          totalMatches: 1,
+          files: [
+            {
+              path: "src/tasks/todo.ts",
+              total: 1,
+              snippets: [{ line: 1, text: "1: export interface TodoItem {" }],
+            },
+          ],
+          note: null,
+          truncated: false,
+        },
+      ],
+      relatedFeatures: [],
+      truncated: false,
+    };
+    const exploreCode = vi.fn(async () => ({
+      synthesis: {
+        summaryMd: "本地 CLI 结论：Codex 用 todo 列表跟踪任务。",
+        comparisonMd: null,
+        harnesses: [{ slug: "explore-cli", analysisMd: "见 src/tasks/todo.ts:1" }],
+      },
+      evidence: localEvidence,
+      patterns: ["todo"],
+    }));
+    const explore = vi.fn(async () => null);
+    const synth = vi.fn(async () => null);
+
+    await runExploration(db, exploration.id, {
+      config: { enabled: false, hasKey: false, model: "test-model", maxPerSync: 0 },
+      engineSettings: { engine: "claude-code", command: "/opt/bin/claude" },
+      explore,
+      exploreCode,
+      synth,
+    });
+
+    const stored = getExploration(db, exploration.id);
+    expect(stored?.status).toBe("success");
+    expect(stored?.engine).toBe("claude-code");
+    expect(stored?.keywords).toEqual(["todo"]);
+    expect(stored?.reportMd).toContain("本地 Claude Code 探索");
+    expect(stored?.reportMd).toContain("本地 CLI 结论");
+    expect(exploreCode).toHaveBeenCalledWith(db, expect.anything(), {
+      command: "/opt/bin/claude",
+    });
+    // The local engine runs even without an API key and replaces the API loop.
+    expect(explore).not.toHaveBeenCalled();
+    expect(synth).not.toHaveBeenCalled();
+  });
+
+  test("falls back to offline retrieval when local Claude Code exploration fails", async () => {
+    const repo = createTempRepo([
+      {
+        subject: "feat: context",
+        files: {
+          "src/context/compact.ts": "export function compactContext(history: string[]) {}\n",
+        },
+      },
+    ]);
+    await ensureMirror({
+      slug: "explore-cli-fallback",
+      repoUrl: repo.url,
+      branch: "main",
+      allowLocalRepo: true,
+    });
+
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "explore-cli-fallback",
+      name: "Fallback",
+      repoUrl: repo.url,
+    });
+    const exploration = beginExploration(db, {
+      proposition: "context compaction",
+      harnessIds: [harness.id],
+    });
+
+    const exploreCode = vi.fn(async () => null);
+    const explore = vi.fn(async () => null);
+    const synth = vi.fn(async () => null);
+
+    await runExploration(db, exploration.id, {
+      config: { enabled: false, hasKey: false, model: "test-model", maxPerSync: 0 },
+      engineSettings: { engine: "claude-code", command: "claude" },
+      explore,
+      exploreCode,
+      synth,
+    });
+
+    const stored = getExploration(db, exploration.id);
+    expect(stored?.status).toBe("success");
+    expect(stored?.engine).toBe("heuristic");
+    expect(stored?.evidence?.harnesses[0].files[0].path).toBe("src/context/compact.ts");
+    expect(stored?.reportMd).toContain("本报告由启发式检索生成");
+    expect(exploreCode).toHaveBeenCalledTimes(1);
+    expect(explore).not.toHaveBeenCalled();
+    expect(synth).toHaveBeenCalledTimes(1);
   });
 
   test("records missing mirrors, empty matches and deleted harnesses without failing", async () => {

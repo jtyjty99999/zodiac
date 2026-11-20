@@ -74,9 +74,11 @@ export default function ExplorationLive({
   return (
     <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent-soft px-3 py-2 text-xs text-accent">
       <Loader2 size={13} className="animate-spin" />
-      {phase === "synthesize"
-        ? "正在综合分析各 harness 的证据…"
-        : "正在离线检索各 harness 的本地镜像…"}
+      {phase === "explore"
+        ? "AI 正在阅读代码并收集证据，可能需要一两分钟…"
+        : phase === "synthesize"
+          ? "正在综合分析各 harness 的证据…"
+          : "正在离线检索各 harness 的本地镜像…"}
     </div>
   );
 }

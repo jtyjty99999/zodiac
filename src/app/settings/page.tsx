@@ -3,6 +3,8 @@ import { PageHeader, SectionCard } from "@/components/ui";
 import { getAiConfig } from "@/lib/analysis/anthropic";
 import { getDb } from "@/lib/db/client";
 import { getAllSettings } from "@/lib/db/repositories/settings";
+import { getClaudeCodeStatus } from "@/lib/explore/claudeCode";
+import { getExplorationEngineSettings } from "@/lib/explore/engineSettings";
 import { getTimezone } from "@/lib/utils/time";
 
 export const metadata = { title: "设置" };
@@ -19,16 +21,20 @@ function StatusRow({ label, value, ok }: { label: string; value: string; ok: boo
   );
 }
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
   const db = getDb();
   const ai = getAiConfig(db);
   const settings = getAllSettings(db);
+  const engineSettings = getExplorationEngineSettings(db);
+  const claudeStatus = await getClaudeCodeStatus(engineSettings.command);
   const storedAiEnabled = settings.aiEnabled;
   const initial = {
     aiEnabled: storedAiEnabled === null ? ai.hasKey : storedAiEnabled === "true",
     aiModel: ai.model,
     aiMaxPerSync: ai.maxPerSync,
     timezone: getTimezone(),
+    exploreEngine: engineSettings.engine,
+    claudeCodeCommand: engineSettings.command,
   };
 
   const schedulerEnabled = process.env.ZODIAC_SCHEDULER !== "off";
@@ -52,6 +58,16 @@ export default function SettingsPage() {
               ok={ai.hasKey}
             />
             <StatusRow label="AI 分析" value={ai.enabled ? "已启用" : "未启用"} ok={ai.enabled} />
+            <StatusRow
+              label="功能探索引擎"
+              value={engineSettings.engine === "claude-code" ? "本地 Claude Code" : "Anthropic API"}
+              ok={engineSettings.engine !== "claude-code" || claudeStatus.available}
+            />
+            <StatusRow
+              label={`本地 Claude Code（${engineSettings.command}）`}
+              value={claudeStatus.available ? (claudeStatus.version ?? "可用") : "不可用"}
+              ok={claudeStatus.available}
+            />
             <StatusRow
               label="后台调度器"
               value={schedulerEnabled ? "运行中" : "已关闭"}
@@ -77,7 +93,8 @@ export default function SettingsPage() {
       </div>
 
       <p className="mt-4 text-[11px] text-muted">
-        提示：AI 调用有每次同步的条数上限与超时保护，失败时自动回退到启发式分析。
+        提示：AI 调用有每次同步的条数上限与超时保护，失败时自动回退到启发式分析。本地 Claude Code
+        探索只读、禁网、忽略项目配置与 MCP，在临时快照中运行，失败时同样回退到离线检索。
       </p>
     </div>
   );

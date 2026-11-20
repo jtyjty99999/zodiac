@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { CLAUDE_CODE_COMMAND_MAX_LENGTH, isValidClaudeCommand } from "../explore/engineSettings";
 import { COMMIT_CATEGORIES } from "../types";
 import { isTimezone } from "../utils/time";
 
@@ -171,6 +172,13 @@ export const settingsSchema = z
     aiModel: z.string().trim().min(1).max(120).optional(),
     aiMaxPerSync: z.coerce.number().int().min(0).max(200).optional(),
     timezone: z.string().trim().refine(isTimezone, "无效的 IANA 时区").optional(),
+    exploreEngine: z.enum(["api", "claude-code"]).optional(),
+    claudeCodeCommand: z
+      .string()
+      .trim()
+      .max(CLAUDE_CODE_COMMAND_MAX_LENGTH, "Claude Code 命令过长")
+      .refine(isValidClaudeCommand, "Claude Code 命令不能为空且不能包含控制字符")
+      .optional(),
   })
   .refine((value) => Object.keys(value).length > 0, "没有需要更新的字段");
 

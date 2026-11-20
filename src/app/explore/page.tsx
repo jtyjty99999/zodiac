@@ -11,13 +11,22 @@ import { getDb } from "@/lib/db/client";
 import { failStaleExplorations, listExplorations } from "@/lib/db/repositories/explorations";
 import { listHarnesses } from "@/lib/db/repositories/harnesses";
 import { activeExplorationIds } from "@/lib/explore/run";
-import type { ExplorationEngine } from "@/lib/types";
+import type { ExplorationEngine, ExplorationPhase } from "@/lib/types";
 
 export const metadata = { title: "功能探索" };
 
 const ENGINE_LABELS: Record<ExplorationEngine, string> = {
   heuristic: "启发式",
   "heuristic+claude": "启发式 + Claude",
+  claude: "Claude 自主探索",
+  "claude-code": "本地 Claude Code 探索",
+};
+
+const PHASE_LABELS: Record<ExplorationPhase, string> = {
+  search: "检索中",
+  explore: "AI 探索中",
+  synthesize: "综合中",
+  done: "",
 };
 
 export default function ExplorePage() {
@@ -37,7 +46,7 @@ export default function ExplorePage() {
     <div>
       <PageHeader
         title="功能探索"
-        description="输入一个命题，系统会把命题转换成检索词，在所选 harness 的本地镜像中离线查找代码证据，并生成跨 harness 的对比报告。配置 AI 后将基于证据做 Claude 综合，否则输出启发式报告。"
+        description="输入一个命题，由 Claude（Anthropic API 或本地 Claude Code CLI，可在设置中选择）自主浏览本地镜像、检索并阅读代码，产出带 path:line 证据的跨 harness 对比报告；AI 不可用时退化为离线关键词检索。"
       />
 
       <SectionCard title="发起探索">
@@ -69,7 +78,7 @@ export default function ExplorePage() {
                     {scopeText(exploration.harnessIds)} · {ENGINE_LABELS[exploration.engine]} ·{" "}
                     <RelativeTime iso={exploration.createdAt} />
                     {exploration.status === "running"
-                      ? ` · ${exploration.phase === "synthesize" ? "综合中" : "检索中"}`
+                      ? ` · ${PHASE_LABELS[exploration.phase]}`
                       : null}
                   </span>
                   {exploration.keywords.length > 0 ? (

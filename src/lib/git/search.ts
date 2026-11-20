@@ -12,6 +12,10 @@ export const SEARCH_LIMITS = {
   contextLines: 2,
   grepTimeoutMs: 20_000,
   blobTimeoutMs: 10_000,
+  maxDirEntries: 300,
+  maxGrepResults: 60,
+  maxReadLines: 120,
+  browseTimeoutMs: 15_000,
 } as const;
 
 export interface SearchFileMatch {
@@ -32,6 +36,13 @@ export interface MirrorSearchResult {
   totalMatches: number;
   truncated: boolean;
   notes: string[];
+}
+
+export interface FileRankContext {
+  /** Files matched by each pattern, used to weight specific patterns higher. */
+  patternSets: Set<string>[];
+  patterns: string[];
+  totalFiles: number;
 }
 
 export interface SearchOptions {
@@ -121,6 +132,28 @@ export function parseGrepCounts(
   };
 }
 
+/**
+ * Parses `git grep -l` output (`<rev>:<path>` lines) into unique safe paths.
+ */
+export function parseGrepPaths(
+  stdout: string,
+  rev: string,
+  maxLines: number = SEARCH_LIMITS.maxGrepLines,
+): { paths: string[]; truncated: boolean } {
+  const prefix = `${rev}:`;
+  const lines = stdout.split("\n").filter(Boolean);
+  const truncated = lines.length > maxLines;
+  const paths = new Set<string>();
+
+  for (const line of lines.slice(0, maxLines)) {
+    const path = line.startsWith(prefix) ? line.slice(prefix.length) : line;
+    if (!isSafeRepoPath(path)) continue;
+    paths.add(path);
+  }
+
+  return { paths: [...paths], truncated };
+}
+
 function pathDepth(path: string): number {
   return path.split("/").length;
 }
@@ -137,23 +170,58 @@ function pathScore(match: SearchFileMatch): number {
   return score;
 }
 
-/** Drops vendored/binary/lock files and ranks the rest by hit count and locality. */
+/**
+ * Weights each pattern by how selective it is (IDF over matched files) and
+ * rewards files that match several distinct patterns or carry a pattern in
+ * their path. Generic words like "task" then stop outranking specific ones.
+ */
+function weightedScore(match: SearchFileMatch, context: FileRankContext): number {
+  const corpus = Math.max(1, context.totalFiles);
+  let score = 0;
+  for (const set of context.patternSets) {
+    if (!set.has(match.path)) continue;
+    score += Math.log(1 + corpus / (1 + set.size));
+  }
+
+  const pathLower = match.path.toLowerCase();
+  let pathHits = 0;
+  for (const pattern of context.patterns) {
+    const normalized = pattern.toLowerCase().replace(/[ -_]+/g, "_");
+    if (normalized.length >= 3 && pathLower.includes(normalized)) pathHits += 1;
+  }
+  return score + Math.min(pathHits, 3) * 1.5 + pathScore(match) * 0.5;
+}
+
+/** Drops vendored/binary/lock files and ranks the rest by specificity and locality. */
 export function rankFileMatches(
   files: SearchFileMatch[],
   maxFiles: number = SEARCH_LIMITS.maxCandidateFiles,
+  context?: FileRankContext,
 ): SearchFileMatch[] {
-  return files
-    .filter(
-      (file) =>
-        !NOISE_PATH.test(file.path) && !BINARY_EXT.test(file.path) && !LOCKFILE.test(file.path),
-    )
-    .sort((a, b) => {
+  const ranked = files.filter(
+    (file) =>
+      !NOISE_PATH.test(file.path) && !BINARY_EXT.test(file.path) && !LOCKFILE.test(file.path),
+  );
+
+  if (!context) {
+    ranked.sort((a, b) => {
       if (b.total !== a.total) return b.total - a.total;
       const scoreDiff = pathScore(b) - pathScore(a);
       if (scoreDiff !== 0) return scoreDiff;
       return a.path.localeCompare(b.path);
-    })
-    .slice(0, maxFiles);
+    });
+    return ranked.slice(0, maxFiles);
+  }
+
+  const scores = new Map<string, number>();
+  for (const file of ranked) scores.set(file.path, weightedScore(file, context));
+  ranked.sort((a, b) => {
+    const scoreDiff = (scores.get(b.path) ?? 0) - (scores.get(a.path) ?? 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    if (b.total !== a.total) return b.total - a.total;
+    return a.path.localeCompare(b.path);
+  });
+  return ranked.slice(0, maxFiles);
 }
 
 function truncateLine(line: string, maxChars: number = SEARCH_LIMITS.maxSnippetChars): string {
@@ -233,6 +301,137 @@ export async function readBlob(
   }
 }
 
+const GREP_TIMEOUT_ENV = { GIT_NO_LAZY_FETCH: "1", GIT_LITERAL_PATHSPECS: "1" } as const;
+
+export interface DirectoryEntry {
+  name: string;
+  type: "dir" | "file";
+}
+
+/** Lists one directory level of a mirror at `rev` for AI-guided browsing. */
+export async function listDirectory(
+  dir: string,
+  rev: string,
+  pathPrefix = "",
+  maxEntries: number = SEARCH_LIMITS.maxDirEntries,
+): Promise<{ entries: DirectoryEntry[]; truncated: boolean }> {
+  if (!SHA_PATTERN.test(rev)) throw new Error("Invalid revision");
+  const prefix = pathPrefix.trim().replace(/\/+$/, "");
+  if (prefix && !isSafeRepoPath(prefix)) throw new Error("Invalid path");
+  const target = prefix ? `${rev}:${prefix}` : rev;
+
+  const { stdout } = await runGit(["--git-dir", dir, "ls-tree", target], {
+    timeoutMs: SEARCH_LIMITS.browseTimeoutMs,
+    env: GREP_TIMEOUT_ENV,
+  });
+
+  const entries: DirectoryEntry[] = [];
+  let truncated = false;
+  for (const line of stdout.split("\n")) {
+    if (!line) continue;
+    const tab = line.indexOf("\t");
+    if (tab === -1) continue;
+    const [, type] = line.slice(0, tab).split(" ");
+    const name = line.slice(tab + 1);
+    if (!name || name.includes("/")) continue;
+    if (entries.length >= maxEntries) {
+      truncated = true;
+      break;
+    }
+    entries.push({ name, type: type === "tree" ? "dir" : "file" });
+  }
+  return { entries, truncated };
+}
+
+export interface GrepLine {
+  path: string;
+  line: number;
+  text: string;
+}
+
+/** Case-insensitive literal grep with line numbers; bounded for AI tool calls. */
+export async function grepCode(
+  dir: string,
+  rev: string,
+  pattern: string,
+  options: { pathPrefix?: string; maxMatches?: number } = {},
+): Promise<{ lines: GrepLine[]; truncated: boolean }> {
+  if (!SHA_PATTERN.test(rev)) throw new Error("Invalid revision");
+  const literal = pattern.trim();
+  if (!isValidSearchPattern(literal)) throw new Error("Invalid pattern");
+  const prefix = options.pathPrefix?.trim().replace(/\/+$/, "") ?? "";
+  if (prefix && !isSafeRepoPath(prefix)) throw new Error("Invalid path");
+  const maxMatches = options.maxMatches ?? SEARCH_LIMITS.maxGrepResults;
+
+  const args = [
+    "--git-dir",
+    dir,
+    "grep",
+    "-n",
+    "-m",
+    "2",
+    "-I",
+    "-i",
+    "-F",
+    "--no-color",
+    "-e",
+    literal,
+    rev,
+    "--",
+  ];
+  if (prefix) args.push(prefix);
+
+  const { stdout } = await runGit(args, {
+    allowExitCodes: [1],
+    timeoutMs: SEARCH_LIMITS.browseTimeoutMs,
+    env: GREP_TIMEOUT_ENV,
+  });
+
+  const revPrefix = `${rev}:`;
+  const lines: GrepLine[] = [];
+  let truncated = false;
+  for (const raw of stdout.split("\n")) {
+    if (!raw) continue;
+    const rest = raw.startsWith(revPrefix) ? raw.slice(revPrefix.length) : raw;
+    const match = rest.match(/^(.*):(\d+):(.*)$/);
+    if (!match) continue;
+    const filePath = match[1];
+    if (!isSafeRepoPath(filePath)) continue;
+    if (lines.length >= maxMatches) {
+      truncated = true;
+      break;
+    }
+    lines.push({
+      path: filePath,
+      line: Number.parseInt(match[2], 10),
+      text: truncateLine(match[3], 240),
+    });
+  }
+  return { lines, truncated };
+}
+
+/** Reads a numbered, bounded window of a text file for AI tool calls. */
+export async function readBlobLines(
+  dir: string,
+  rev: string,
+  filePath: string,
+  options: { startLine?: number; maxLines?: number } = {},
+): Promise<{ lines: string[]; truncated: boolean } | null> {
+  const content = await readBlob(dir, rev, filePath);
+  if (content === null) return null;
+  const all = content.split("\n");
+  const start = Math.max(1, Math.floor(options.startLine ?? 1));
+  const maxLines = Math.min(
+    Math.max(1, Math.floor(options.maxLines ?? SEARCH_LIMITS.maxReadLines)),
+    SEARCH_LIMITS.maxReadLines,
+  );
+  const slice = all.slice(start - 1, start - 1 + maxLines);
+  return {
+    lines: slice.map((line, offset) => `${start + offset}: ${truncateLine(line, 240)}`),
+    truncated: start - 1 + slice.length < all.length,
+  };
+}
+
 /**
  * Searches a bare mirror at a resolved revision with literal, case-insensitive
  * patterns: one `grep -c` pass to rank files, then bounded blob reads for
@@ -251,21 +450,41 @@ export async function searchMirror(
   const maxFiles = options.maxFiles ?? SEARCH_LIMITS.maxFiles;
   const maxSnippetsPerFile = options.maxSnippetsPerFile ?? SEARCH_LIMITS.maxSnippetsPerFile;
   const maxBlobBytes = options.maxBlobBytes ?? SEARCH_LIMITS.maxBlobBytes;
+  const timeoutMs = options.timeoutMs ?? SEARCH_LIMITS.grepTimeoutMs;
+  const env = { GIT_NO_LAZY_FETCH: "1", GIT_LITERAL_PATHSPECS: "1" };
 
-  const args = ["--git-dir", dir, "grep", "-c", "-I", "-i", "-F", "--no-color"];
-  for (const pattern of normalized) args.push("-e", pattern);
-  args.push(rev, "--");
+  const countsArgs = ["--git-dir", dir, "grep", "-c", "-I", "-i", "-F", "--no-color"];
+  for (const pattern of normalized) countsArgs.push("-e", pattern);
+  countsArgs.push(rev, "--");
 
-  const { stdout } = await runGit(args, {
-    allowExitCodes: [1],
-    timeoutMs: options.timeoutMs ?? SEARCH_LIMITS.grepTimeoutMs,
-    env: { GIT_NO_LAZY_FETCH: "1", GIT_LITERAL_PATHSPECS: "1" },
-  });
+  // One combined pass for exact counts and one `-l` pass per pattern so
+  // ranking can tell a specific term from a generic one.
+  const listPatternFiles = async (pattern: string): Promise<Set<string> | null> => {
+    try {
+      const { stdout } = await runGit(
+        ["--git-dir", dir, "grep", "-l", "-I", "-i", "-F", "--no-color", "-e", pattern, rev, "--"],
+        { allowExitCodes: [1], timeoutMs, env },
+      );
+      return new Set(parseGrepPaths(stdout, rev).paths);
+    } catch {
+      return null;
+    }
+  };
 
-  const parsed = parseGrepCounts(stdout, rev);
+  const [counts, ...patternSets] = await Promise.all([
+    runGit(countsArgs, { allowExitCodes: [1], timeoutMs, env }),
+    ...normalized.map(listPatternFiles),
+  ]);
+
+  const parsed = parseGrepCounts(counts.stdout, rev);
   const totalFiles = parsed.files.length;
   const totalMatches = parsed.files.reduce((sum, file) => sum + file.total, 0);
-  const candidates = rankFileMatches(parsed.files);
+  const sets = patternSets.every((set): set is Set<string> => set !== null) ? patternSets : null;
+  const candidates = rankFileMatches(
+    parsed.files,
+    SEARCH_LIMITS.maxCandidateFiles,
+    sets ? { patternSets: sets, patterns: normalized, totalFiles } : undefined,
+  );
   const notes: string[] = [];
   const files: SearchFileResult[] = [];
 

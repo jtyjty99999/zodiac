@@ -82,7 +82,39 @@ export const ZH_EN_TERMS: ReadonlyArray<{ zh: string[]; en: string[] }> = [
   { zh: ["系统提示", "提示词"], en: ["system prompt", "prompt"] },
   { zh: ["多智能体"], en: ["multi-agent", "orchestrat"] },
   { zh: ["计划模式"], en: ["plan mode"] },
+  // Research questions rarely name an implementation. These entries map a
+  // topic to the code signals that usually implement it, not just a literal
+  // translation.
+  {
+    zh: ["长程任务", "长时任务", "长期任务", "长任务", "长时间运行"],
+    en: ["long-running", "long-horizon", "checkpoint"],
+  },
+  { zh: ["多步骤", "多步任务"], en: ["multi-step", "multi_step"] },
+  { zh: ["多轮对话", "多轮"], en: ["multi-turn", "multi_turn"] },
+  { zh: ["子任务"], en: ["subtask", "sub_task"] },
+  { zh: ["后台任务"], en: ["background task"] },
+  { zh: ["定时任务"], en: ["cron", "schedule"] },
+  { zh: ["任务"], en: ["task"] },
+  { zh: ["计划"], en: ["plan"] },
+  { zh: ["目标"], en: ["goal"] },
+  { zh: ["待办"], en: ["todo"] },
+  { zh: ["检查点", "断点"], en: ["checkpoint"] },
+  { zh: ["进度"], en: ["progress"] },
+  { zh: ["预算"], en: ["budget"] },
+  { zh: ["轮次", "回合"], en: ["turn"] },
+  { zh: ["步骤"], en: ["step"] },
+  { zh: ["自主"], en: ["autonomous", "autonomy"] },
+  { zh: ["后台"], en: ["background"] },
+  { zh: ["工作流"], en: ["workflow"] },
+  { zh: ["超时"], en: ["timeout"] },
+  { zh: ["隔离"], en: ["isolat", "sandbox"] },
+  { zh: ["安全"], en: ["security"] },
+  { zh: ["成本", "费用"], en: ["cost"] },
+  { zh: ["评测", "基准"], en: ["eval", "benchmark"] },
+  { zh: ["协议"], en: ["protocol"] },
+  { zh: ["索引"], en: ["index"] },
   { zh: ["上下文"], en: ["context"] },
+  { zh: ["溢出"], en: ["overflow"] },
   { zh: ["压缩"], en: ["compact"] },
   { zh: ["摘要"], en: ["summar"] },
   { zh: ["记忆"], en: ["memory"] },
@@ -166,6 +198,23 @@ const BIGRAM_NOISE = new Set([
 // vocabulary ("core", "advanced", …) and would flood the search results.
 const MAX_FEATURE_TERM_SHARING = 2;
 
+// Short generic segments from feature keys match far too much code ("mode"
+// also matches "model", "tools" matches every tools.* feature).
+const FEATURE_TERM_STOPWORDS = new Set([
+  "agent",
+  "api",
+  "app",
+  "core",
+  "config",
+  "lib",
+  "mode",
+  "modes",
+  "src",
+  "tool",
+  "tools",
+  "ui",
+]);
+
 function featureTermFrequency(features: FeatureHint[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const feature of features) {
@@ -199,6 +248,13 @@ function chineseBigrams(proposition: string, limit = 2): string[] {
   return [...new Set(bigrams)].slice(0, limit);
 }
 
+/** "tool call" → "tool_call": code identifiers rarely use spaces or hyphens. */
+function identifierVariants(term: string): string[] {
+  if (!/[ -]/.test(term)) return [term];
+  const normalized = term.replace(/[ -]+/g, "_");
+  return normalized === term ? [term] : [term, normalized];
+}
+
 function parseTags(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -214,7 +270,9 @@ function parseTags(raw: string | null): string[] {
 function featureTerms(feature: FeatureHint): string[] {
   const tags = parseTags(feature.tags);
   const keySegments = feature.key.split(/[.-]/).filter((segment) => segment.length >= 3);
-  return [...tags, ...keySegments];
+  return [...tags, ...keySegments].filter(
+    (term) => !FEATURE_TERM_STOPWORDS.has(term.toLowerCase()),
+  );
 }
 
 /** Scores catalog features by word overlap with the proposition's terms. */
@@ -264,17 +322,26 @@ export function extractKeywords(
   const notes: string[] = [];
   const tokens = latinTokens(proposition);
   const dictionaryTerms: string[] = [];
+  const dictionaryVariants: string[] = [];
   const matchedChinese: string[] = [];
 
   for (const entry of ZH_EN_TERMS) {
     const hit = entry.zh.find((term) => proposition.includes(term));
     if (!hit) continue;
     matchedChinese.push(hit);
-    dictionaryTerms.push(...entry.en);
+    for (const term of entry.en) {
+      dictionaryTerms.push(term);
+      for (const variant of identifierVariants(term)) {
+        if (variant !== term) dictionaryVariants.push(variant);
+      }
+    }
   }
 
+  // Chinese bigrams are too brittle as grep patterns ("何处", "理长") but are
+  // a decent bridge into the Chinese feature catalog.
+  const grams = chineseBigrams(proposition, 12);
   const featureCandidates = matchFeatures(
-    [...tokens, ...matchedChinese, ...dictionaryTerms],
+    [...tokens, ...dictionaryTerms, ...matchedChinese, ...grams],
     features,
   );
   const frequency = featureTermFrequency(features);
@@ -286,6 +353,7 @@ export function extractKeywords(
     ...dictionaryTerms,
     ...tokens,
     ...specificFeatureTerms,
+    ...dictionaryVariants,
     ...matchedChinese,
   ];
 
@@ -296,6 +364,8 @@ export function extractKeywords(
     if (!isValidSearchPattern(pattern)) return;
     const key = pattern.toLowerCase();
     if (seen.has(key)) return;
+    // Literal grep already covers singular/plural forms; do not spend a slot.
+    if (seen.has(key.replace(/s$/, "")) || seen.has(`${key}s`)) return;
     seen.add(key);
     patterns.push(pattern);
   };
@@ -303,10 +373,6 @@ export function extractKeywords(
   for (const candidate of ordered) {
     if (patterns.length >= maxPatterns) break;
     push(candidate);
-  }
-
-  if (patterns.length < 2) {
-    for (const bigram of chineseBigrams(proposition)) push(bigram);
   }
 
   if (patterns.length === 0) {

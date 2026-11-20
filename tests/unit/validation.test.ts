@@ -170,4 +170,15 @@ describe("misc schemas", () => {
     expect(settingsSchema.safeParse({ timezone: "Mars/Olympus" }).success).toBe(false);
     expect(settingsSchema.safeParse({}).success).toBe(false);
   });
+
+  test("settingsSchema validates the exploration engine and CLI command", () => {
+    expect(settingsSchema.safeParse({ exploreEngine: "claude-code" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ exploreEngine: "api" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ exploreEngine: "local" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ claudeCodeCommand: "/usr/local/bin/claude" }).success).toBe(
+      true,
+    );
+    expect(settingsSchema.safeParse({ claudeCodeCommand: "   " }).success).toBe(false);
+    expect(settingsSchema.safeParse({ claudeCodeCommand: "claude\nrm -rf /" }).success).toBe(false);
+  });
 });

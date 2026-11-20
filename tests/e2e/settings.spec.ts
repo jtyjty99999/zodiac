@@ -6,6 +6,10 @@ test("settings shows analysis, routing and timezone controls", async ({ page }) 
   await expect(page.getByRole("checkbox", { name: /启用 Claude 增强分析/ })).toBeVisible();
   await expect(page.locator("#settings-ai-model")).toBeVisible();
   await expect(page.locator("#settings-timezone")).toHaveValue("Asia/Shanghai");
+  // The engine choice is persisted user state, so assert the control exposes
+  // exactly the two supported engines rather than one particular stored value.
+  await expect(page.locator("#settings-explore-engine")).toHaveValue(/^(api|claude-code)$/);
+  await expect(page.locator("#settings-claude-command")).not.toHaveValue("");
   await expect(page.getByRole("button", { name: "保存设置" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "环境变量" })).toBeVisible();
 });

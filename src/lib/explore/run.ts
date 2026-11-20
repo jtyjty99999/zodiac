@@ -1,3 +1,4 @@
+import { type AiConfig, getAiConfig } from "../analysis/anthropic";
 import type { Db } from "../db/client";
 import {
   createExploration,
@@ -5,12 +6,26 @@ import {
   findRunningExploration,
   finishExploration,
   getExploration,
+  updateExplorationKeywords,
   updateExplorationPhase,
 } from "../db/repositories/explorations";
 import { getHarnessById, listHarnesses } from "../db/repositories/harnesses";
-import type { Exploration, ExplorationHarnessEvidence, Harness } from "../types";
+import type {
+  Exploration,
+  ExplorationEngine,
+  ExplorationEvidence,
+  ExplorationHarnessEvidence,
+  Harness,
+} from "../types";
 import { cleanErrorMessage } from "../utils/errors";
+import {
+  type AgenticExplorationInput,
+  type AgenticExplorationResult,
+  exploreWithClaude,
+} from "./agent";
 import { type ExplorationSynthesis, type SynthesisInput, synthesizeExploration } from "./ai";
+import { exploreWithClaudeCode } from "./claudeCode";
+import { type ExplorationEngineSettings, getExplorationEngineSettings } from "./engineSettings";
 import { buildEvidence } from "./evidence";
 import { extractKeywordsFor } from "./keywords";
 import { buildReport } from "./report";
@@ -115,13 +130,41 @@ function deletedHarnessEntry(harnessId: number): ExplorationHarnessEvidence {
 }
 
 export interface RunExplorationOptions {
+  /** Test seam: replaces the AI configuration (defaults to getAiConfig). */
+  config?: AiConfig;
+  /** Test seam: replaces the stored engine choice (defaults to getExplorationEngineSettings). */
+  engineSettings?: ExplorationEngineSettings;
   /** Test seam: replaces the real Claude synthesis. */
   synth?: (db: Db, input: SynthesisInput) => Promise<ExplorationSynthesis | null>;
+  /** Test seam: replaces the real AI tool-loop exploration. */
+  explore?: (
+    db: Db,
+    input: AgenticExplorationInput,
+    options: { config?: AiConfig },
+  ) => Promise<AgenticExplorationResult | null>;
+  /** Test seam: replaces the local Claude Code CLI exploration. */
+  exploreCode?: (
+    db: Db,
+    input: AgenticExplorationInput,
+    options: { command?: string },
+  ) => Promise<AgenticExplorationResult | null>;
+}
+
+function withDeletedHarnesses(
+  evidence: ExplorationEvidence,
+  missingIds: number[],
+): ExplorationEvidence {
+  if (missingIds.length === 0) return evidence;
+  return {
+    ...evidence,
+    harnesses: [...evidence.harnesses, ...missingIds.map(deletedHarnessEntry)],
+  };
 }
 
 /**
- * Executes a reserved exploration: offline evidence retrieval, optional Claude
- * synthesis, report assembly. Never throws; failures are recorded on the row.
+ * Executes a reserved exploration. With AI configured Claude explores the
+ * mirrors itself through tools; otherwise (or on failure) the offline
+ * keyword retrieval path runs. Never throws; failures are recorded on the row.
  */
 export async function runExploration(
   db: Db,
@@ -135,8 +178,6 @@ export async function runExploration(
   }
 
   try {
-    updateExplorationPhase(db, id, "search");
-
     const live: Harness[] = [];
     const missingIds: number[] = [];
     for (const harnessId of exploration.harnessIds) {
@@ -145,40 +186,70 @@ export async function runExploration(
       else missingIds.push(harnessId);
     }
 
-    const evidence = await buildEvidence(db, {
-      harnesses: live,
-      patterns: exploration.keywords,
-      matchedFeatures: exploration.matchedFeatures,
-    });
-    const fullEvidence =
-      missingIds.length === 0
-        ? evidence
-        : {
-            ...evidence,
-            harnesses: [...evidence.harnesses, ...missingIds.map(deletedHarnessEntry)],
-          };
-
-    updateExplorationPhase(db, id, "synthesize");
-    const synthesis = await (options.synth ?? synthesizeExploration)(db, {
+    const config = options.config ?? getAiConfig(db);
+    const engineSettings = options.engineSettings ?? getExplorationEngineSettings(db);
+    const agentInput: AgenticExplorationInput = {
       proposition: exploration.proposition,
       patterns: exploration.keywords,
-      evidence: fullEvidence,
       matchedFeatures: exploration.matchedFeatures,
-    });
+      harnesses: live,
+    };
+    let evidence: ExplorationEvidence | null = null;
+    let synthesis: ExplorationSynthesis | null = null;
+    let engine: ExplorationEngine = "heuristic";
 
+    // The local CLI is an explicit opt-in: when selected it runs even without
+    // ANTHROPIC_API_KEY, and its failures fall back to offline retrieval.
+    const useLocalCli = engineSettings.engine === "claude-code";
+    if (useLocalCli || config.enabled) {
+      updateExplorationPhase(db, id, "explore");
+      const ai = useLocalCli
+        ? await (options.exploreCode ?? exploreWithClaudeCode)(db, agentInput, {
+            command: engineSettings.command,
+          })
+        : await (options.explore ?? exploreWithClaude)(db, agentInput, { config });
+      if (ai) {
+        evidence = ai.evidence;
+        synthesis = ai.synthesis;
+        engine = useLocalCli ? "claude-code" : "claude";
+        if (ai.patterns.length > 0) {
+          updateExplorationKeywords(db, id, ai.patterns);
+        }
+      }
+    }
+
+    if (!evidence) {
+      updateExplorationPhase(db, id, "search");
+      evidence = await buildEvidence(db, {
+        harnesses: live,
+        patterns: exploration.keywords,
+        matchedFeatures: exploration.matchedFeatures,
+      });
+      updateExplorationPhase(db, id, "synthesize");
+      synthesis = await (options.synth ?? synthesizeExploration)(db, {
+        proposition: exploration.proposition,
+        patterns: exploration.keywords,
+        evidence,
+        matchedFeatures: exploration.matchedFeatures,
+      });
+      engine = synthesis ? "heuristic+claude" : "heuristic";
+    }
+
+    const fullEvidence = withDeletedHarnesses(evidence, missingIds);
     const report = buildReport(
       {
         proposition: exploration.proposition,
         createdAt: exploration.createdAt,
-        keywords: exploration.keywords,
+        keywords: fullEvidence.patterns,
         evidence: fullEvidence,
       },
       synthesis,
+      engine,
     );
 
     finishExploration(db, id, {
       status: "success",
-      engine: synthesis ? "heuristic+claude" : "heuristic",
+      engine,
       reportMd: report.slice(0, 100_000),
       evidence: fullEvidence,
     });

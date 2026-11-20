@@ -14,10 +14,10 @@ export interface ReportInput {
 }
 
 const STATUS_LABELS: Record<ExplorationHarnessEvidence["status"], string> = {
-  ok: "已检索",
+  ok: "已探索",
   empty: "未命中",
   missing: "镜像未同步",
-  error: "检索失败",
+  error: "探索失败",
 };
 
 const SUPPORT_LABELS: Record<SupportStatus, string> = {
@@ -30,6 +30,8 @@ const SUPPORT_LABELS: Record<SupportStatus, string> = {
 const MAX_REPORT_FILES_PER_HARNESS = 4;
 
 function engineLabel(engine: ExplorationEngine): string {
+  if (engine === "claude-code") return "本地 Claude Code 探索";
+  if (engine === "claude") return "Claude 自主探索";
   return engine === "heuristic+claude" ? "启发式 + Claude" : "启发式";
 }
 
@@ -41,6 +43,16 @@ function fenced(text: string): string {
   const longestRun = Math.max(0, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
   const fence = "`".repeat(Math.max(3, longestRun + 1));
   return `${fence}text\n${text}\n${fence}`;
+}
+
+/**
+ * Model-authored Markdown uses its own heading levels; shift them down so the
+ * text nests under the report's sections instead of flattening the outline.
+ */
+function demoteHeadings(markdown: string, levels: number): string {
+  return markdown.replace(/^(#{1,6})(\s)/gm, (_match, hashes: string, space: string) => {
+    return `${"#".repeat(Math.min(6, hashes.length + levels))}${space}`;
+  });
 }
 
 function topDirs(
@@ -122,46 +134,61 @@ function harnessSection(
   synthesis: ExplorationSynthesis | null,
 ): string {
   const lines = [`### ${entry.name}（${entry.slug}）`, ""];
-  lines.push(`- 状态：${STATUS_LABELS[entry.status]}`);
-  if (entry.rev) lines.push(`- 检索版本：\`${entry.rev.slice(0, 10)}\``);
-  lines.push(`- 命中：${entry.totalFiles} 个文件 / ${entry.totalMatches} 行`);
+  const meta = [
+    STATUS_LABELS[entry.status],
+    ...(entry.rev ? [`版本 \`${entry.rev.slice(0, 10)}\``] : []),
+    `命中 ${entry.totalFiles} 个文件 / ${entry.totalMatches} 行`,
+  ];
   const dirs = topDirs(entry);
   if (dirs.length > 0) {
-    lines.push(`- 主要目录：${dirs.map((dir) => `\`${dir.dir}\``).join("、")}`);
+    meta.push(`主要目录 ${dirs.map((dir) => `\`${dir.dir}\``).join("、")}`);
   }
+  lines.push(`> ${meta.join(" · ")}`);
   const related = relatedLine(input, entry.slug);
-  if (related) lines.push(`- 相关功能点：${related}`);
-  if (entry.note) lines.push(`- 说明：${entry.note}`);
+  if (related) lines.push(`> 相关功能点：${related}`);
+  if (entry.note) lines.push(`> 说明：${entry.note}`);
   lines.push("");
 
   const analysis = synthesis?.harnesses.find((item) => item.slug === entry.slug);
   if (analysis) {
-    lines.push(analysis.analysisMd, "");
+    lines.push(demoteHeadings(analysis.analysisMd, 2), "");
   }
 
   if (entry.files.length === 0) {
     if (entry.status === "missing") {
-      lines.push("该 harness 尚无本地镜像，未执行检索。", "");
+      lines.push("该 harness 尚无本地镜像，未执行探索。", "");
     } else if (entry.status === "error") {
-      lines.push("检索过程中出错，未获得可用证据。", "");
+      lines.push("探索过程中出错，未获得可用证据。", "");
     } else {
-      lines.push("未检索到包含这些关键词的代码。", "");
+      lines.push("未在该 harness 中找到与命题相关的实现线索。", "");
     }
     return lines.join("\n");
   }
 
-  for (const file of entry.files.slice(0, MAX_REPORT_FILES_PER_HARNESS)) {
-    lines.push(`#### \`${file.path}\`（${file.total} 行命中）`, "");
-    for (const snippet of file.snippets) {
-      lines.push(fenced(snippet.text), "");
+  if (!synthesis) {
+    // Offline fallback has no written analysis, so snippets carry the report.
+    for (const file of entry.files.slice(0, MAX_REPORT_FILES_PER_HARNESS)) {
+      lines.push(`#### \`${file.path}\`（${file.total} 行命中）`, "");
+      for (const snippet of file.snippets) {
+        lines.push(fenced(snippet.text), "");
+      }
     }
+    if (entry.files.length > MAX_REPORT_FILES_PER_HARNESS) {
+      lines.push(
+        `> 另有 ${entry.files.length - MAX_REPORT_FILES_PER_HARNESS} 个命中文件，可在页面「代码证据」中查看。`,
+        "",
+      );
+    }
+    return lines.join("\n");
   }
-  if (entry.files.length > MAX_REPORT_FILES_PER_HARNESS) {
-    lines.push(
-      `> 另有 ${entry.files.length - MAX_REPORT_FILES_PER_HARNESS} 个命中文件未在报告中展开，可在页面「证据明细」中查看。`,
-      "",
-    );
+
+  // AI reports stay analysis-first; code is kept as traceable citations only.
+  lines.push("**代码引用**", "");
+  for (const file of entry.files) {
+    const cited = file.snippets.map((snippet) => snippet.line).join("、");
+    lines.push(`- \`${file.path}\`（第 ${cited} 行）`);
   }
+  lines.push("");
   return lines.join("\n");
 }
 
@@ -169,9 +196,11 @@ function harnessSection(
 export function buildReport(
   input: ReportInput,
   synthesis: ExplorationSynthesis | null = null,
+  engine: ExplorationEngine = synthesis ? "heuristic+claude" : "heuristic",
 ): string {
-  const engine: ExplorationEngine = synthesis ? "heuristic+claude" : "heuristic";
-  const keywords = input.evidence.patterns.map((pattern) => `\`${pattern}\``).join("、") || "—";
+  const keywords =
+    input.evidence.patterns.map((pattern) => `\`${pattern}\``).join("、") ||
+    (engine === "claude" || engine === "claude-code" ? "AI 自主探索" : "—");
   const conclusion = synthesis ? synthesis.summaryMd : heuristicConclusion(input);
 
   const tableRows = input.evidence.harnesses.map((entry) => {
@@ -198,18 +227,28 @@ export function buildReport(
     "",
   ];
 
-  if (synthesis?.differencesMd) {
-    parts.push("## 横向差异", "", synthesis.differencesMd, "");
+  if (!synthesis) {
+    // Make the limitation impossible to miss: this report has no "how" analysis.
+    parts.splice(
+      4,
+      0,
+      "> ⚠ 本次未运行 AI 分析：以下只有代码命中位置，没有实现方案分析。请到「设置」启用 Anthropic API 或本地 Claude Code，然后重新发起探索。",
+      "",
+    );
+  }
+
+  if (synthesis?.comparisonMd) {
+    parts.push("## 横向对比", "", demoteHeadings(synthesis.comparisonMd, 1), "");
+  } else {
+    parts.push("## 横向对比", "");
   }
 
   parts.push(
-    "## 横向对比",
-    "",
-    "| Harness | 检索状态 | 命中文件 | 命中行数 | 主要目录 | 相关功能点 |",
+    "| Harness | 探索状态 | 命中文件 | 命中行数 | 主要目录 | 相关功能点 |",
     "| --- | --- | ---: | ---: | --- | --- |",
     ...(tableRows.length > 0 ? tableRows : ["| — | — | 0 | 0 | — | — |"]),
     "",
-    "## 各 harness 证据",
+    synthesis ? "## 各 harness 实现方案" : "## 各 harness 代码线索",
     "",
   );
 
@@ -235,8 +274,10 @@ export function buildReport(
   }
   if (!synthesis) {
     parts.push(
-      "- 本报告由启发式检索生成，仅展示关键词命中与已有功能目录信息；配置 ANTHROPIC_API_KEY 并启用 Claude 后可获得综合解读。",
+      "- 本报告由启发式检索生成，仅展示关键词命中与已有功能目录信息；配置 AI 引擎后可获得完整的实现方案与横向对比。",
     );
+  } else {
+    parts.push("- 报告以分析为主；原始代码片段可在页面下方「代码证据」中展开查看。");
   }
   parts.push("");
 

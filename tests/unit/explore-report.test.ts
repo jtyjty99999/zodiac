@@ -64,13 +64,15 @@ describe("buildHeuristicReport", () => {
     expect(report).toContain("`context`、`compact`");
     expect(report).toContain("## 结论");
     expect(report).toContain("## 横向对比");
-    expect(report).toContain("| Codex | 已检索 | 1 | 3 | `codex-rs/core` | 上下文压缩（支持） |");
+    expect(report).toContain("| Codex | 已探索 | 1 | 3 | `codex-rs/core` | 上下文压缩（支持） |");
     expect(report).toContain("| Pi | 镜像未同步 | 0 | 0 | — |");
     expect(report).toContain("codex-rs/core/src/context.rs");
     expect(report).toContain("```text");
     expect(report).toContain("10: fn compact() {");
     expect(report).toContain("本地镜像尚未同步");
     expect(report).toContain("本报告由启发式检索生成");
+    // The limitation is stated up front, not only in the closing notes.
+    expect(report).toContain("本次未运行 AI 分析");
     expect(report).not.toContain("## 横向差异");
   });
 
@@ -118,20 +120,42 @@ describe("buildHeuristicReport", () => {
 describe("buildReport with Claude synthesis", () => {
   const synthesis: ExplorationSynthesis = {
     summaryMd: "Codex 在 core 层压缩上下文，Pi 没有可用的检索证据。",
-    differencesMd: "两者在压缩触发时机上不同。",
-    harnesses: [{ slug: "codex", analysisMd: "Codex 于 `context.rs` 中实现压缩。" }],
+    comparisonMd: "## 触发时机\n\n两者在压缩触发时机上不同。",
+    harnesses: [
+      {
+        slug: "codex",
+        analysisMd:
+          "## 方案概述\n\nCodex 于 `context.rs` 中实现压缩。\n\n### 数据流\n\n请求前压缩。",
+      },
+    ],
   };
 
-  test("merges AI summary, differences and per-harness analysis into the skeleton", () => {
+  test("leads with the analysis, comparison and per-harness implementation", () => {
     const report = buildReport(input(), synthesis);
     expect(report).toContain("引擎：启发式 + Claude");
     expect(report).toContain("Codex 在 core 层压缩上下文");
-    expect(report).toContain("## 横向差异");
-    expect(report).toContain("两者在压缩触发时机上不同。");
-    expect(report).toContain("Codex 于 `context.rs` 中实现压缩。");
-    expect(report).not.toContain("本报告由启发式检索生成");
-    // Skeleton and evidence stay intact under synthesis.
     expect(report).toContain("## 横向对比");
+    expect(report).toContain("两者在压缩触发时机上不同。");
+    expect(report).toContain("## 各 harness 实现方案");
+    expect(report).toContain("Codex 于 `context.rs` 中实现压缩。");
+    // Model headings are demoted so they nest under the report's sections.
+    expect(report).toContain("### 触发时机");
+    expect(report).toContain("#### 方案概述");
+    expect(report).toContain("##### 数据流");
+    expect(report).not.toContain("本报告由启发式检索生成");
+    // Skeleton table and traceable citations stay intact under synthesis.
+    expect(report).toContain("| Codex | 已探索 | 1 | 3 |");
+    expect(report).toContain("**代码引用**");
     expect(report).toContain("codex-rs/core/src/context.rs");
+    // Code snippets are demoted to the page's collapsed evidence section.
+    expect(report).not.toContain("```text");
+    expect(report).toContain("「代码证据」中展开查看");
+  });
+
+  test("falls back to the comparison table when the model omits comparisonMd", () => {
+    const report = buildReport(input(), { ...synthesis, comparisonMd: null });
+    expect(report).toContain("## 横向对比");
+    expect(report).toContain("| Codex | 已探索 | 1 | 3 |");
+    expect(report).not.toContain("两者在压缩触发时机上不同。");
   });
 });

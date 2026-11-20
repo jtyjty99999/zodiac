@@ -1,6 +1,7 @@
 import { getAiConfig } from "@/lib/analysis/anthropic";
 import { type Db, getDb } from "@/lib/db/client";
 import { getAllSettings, setSetting } from "@/lib/db/repositories/settings";
+import { getExplorationEngineSettings } from "@/lib/explore/engineSettings";
 import { apiError, apiOk, serverError } from "@/lib/http/responses";
 import { guardMutation, readJsonBody } from "@/lib/http/routeHelpers";
 import { getTimezone } from "@/lib/utils/time";
@@ -18,6 +19,7 @@ function settingsPayload(db: Db) {
       model: config.model,
       maxPerSync: config.maxPerSync,
     },
+    explore: getExplorationEngineSettings(db),
     timezone: getTimezone(),
     schedulerEnabled: process.env.ZODIAC_SCHEDULER !== "off",
     hasGithubToken: Boolean(process.env.GITHUB_TOKEN?.trim()),
@@ -59,6 +61,12 @@ export async function POST(request: Request) {
     if (input.timezone !== undefined) {
       setSetting(db, "timezone", input.timezone);
       process.env.ZODIAC_TZ = input.timezone;
+    }
+    if (input.exploreEngine !== undefined) {
+      setSetting(db, "exploreEngine", input.exploreEngine);
+    }
+    if (input.claudeCodeCommand !== undefined) {
+      setSetting(db, "claudeCodeCommand", input.claudeCodeCommand);
     }
 
     return apiOk(settingsPayload(db));

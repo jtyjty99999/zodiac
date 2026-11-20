@@ -76,7 +76,7 @@ export default function ExplorationForm({ harnesses }: { harnesses: HarnessOptio
           onChange={(event) => setProposition(event.target.value)}
         />
         <div className="mt-1 flex justify-between text-[11px] text-muted">
-          <span>中文或英文均可；系统会转换为代码检索词，在本地镜像中查找证据。</span>
+          <span>中文或英文均可；AI 会自主浏览本地镜像并给出 path:line 证据。</span>
           <span className="tabular-nums">
             {proposition.length} / {MAX_PROPOSITION_LENGTH}
           </span>

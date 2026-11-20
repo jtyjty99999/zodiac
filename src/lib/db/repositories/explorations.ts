@@ -161,6 +161,14 @@ export function updateExplorationPhase(
   );
 }
 
+/** Replaces the search patterns while the exploration is still running. */
+export function updateExplorationKeywords(db: Db = getDb(), id: number, keywords: string[]): void {
+  db.prepare("UPDATE explorations SET keywords = ? WHERE id = ? AND status = 'running'").run(
+    JSON.stringify(keywords),
+    id,
+  );
+}
+
 export interface FinishExplorationInput {
   status: Exclude<ExplorationStatus, "running">;
   engine?: ExplorationEngine;

@@ -228,8 +228,8 @@ export interface HarnessStats {
 }
 
 export type ExplorationStatus = "running" | "success" | "failed";
-export type ExplorationPhase = "search" | "synthesize" | "done";
-export type ExplorationEngine = "heuristic" | "heuristic+claude";
+export type ExplorationPhase = "search" | "explore" | "synthesize" | "done";
+export type ExplorationEngine = "heuristic" | "heuristic+claude" | "claude" | "claude-code";
 export type ExplorationHarnessStatus = "ok" | "empty" | "missing" | "error";
 
 export interface ExplorationMatchedFeature {

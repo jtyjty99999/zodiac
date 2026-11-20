@@ -4,6 +4,7 @@ import {
   isSafeRepoPath,
   isValidSearchPattern,
   parseGrepCounts,
+  parseGrepPaths,
   rankFileMatches,
 } from "@/lib/git/search";
 
@@ -65,6 +66,30 @@ describe("parseGrepCounts", () => {
   });
 });
 
+describe("parseGrepPaths", () => {
+  const rev = "c".repeat(40);
+
+  test("strips the rev prefix, dedupes and drops unsafe paths", () => {
+    const stdout = [
+      `${rev}:src/a.ts`,
+      `${rev}:src/a.ts`,
+      `${rev}:../evil.ts`,
+      `${rev}:/absolute.ts`,
+      "src/b.ts",
+    ].join("\n");
+    const { paths, truncated } = parseGrepPaths(stdout, rev);
+    expect(truncated).toBe(false);
+    expect(paths).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+
+  test("flags truncated output when it exceeds the line budget", () => {
+    const stdout = [`${rev}:src/a.ts`, `${rev}:src/b.ts`, `${rev}:src/c.ts`].join("\n");
+    const { paths, truncated } = parseGrepPaths(stdout, rev, 2);
+    expect(truncated).toBe(true);
+    expect(paths).toEqual(["src/a.ts", "src/b.ts"]);
+  });
+});
+
 describe("rankFileMatches", () => {
   test("drops vendored, binary and lock files", () => {
     const ranked = rankFileMatches([
@@ -99,6 +124,27 @@ describe("rankFileMatches", () => {
       1,
     );
     expect(ranked).toHaveLength(1);
+  });
+
+  test("weighted ranking ranks a file matching a rare pattern above a generic one", () => {
+    // "task" matches 900 of 1000 files; "todo" matches only 3. Even with equal
+    // raw counts, the selective pattern must win.
+    const generic = new Set([
+      ...Array.from({ length: 900 }, (_, index) => `gen/file-${index}.ts`),
+      "src/task.ts",
+    ]);
+    const specific = new Set(["src/todo.ts", "src/other.ts", "src/third.ts"]);
+
+    const ranked = rankFileMatches(
+      [
+        { path: "src/task.ts", total: 5 },
+        { path: "src/todo.ts", total: 5 },
+      ],
+      10,
+      { patternSets: [specific, generic], patterns: ["todo", "task"], totalFiles: 1000 },
+    );
+
+    expect(ranked.map((file) => file.path)).toEqual(["src/todo.ts", "src/task.ts"]);
   });
 });
 
