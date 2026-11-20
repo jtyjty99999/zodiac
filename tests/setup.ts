@@ -13,3 +13,5 @@ delete process.env.ANTHROPIC_API_KEY;
 delete process.env.ANTHROPIC_MODEL;
 delete process.env.GITHUB_TOKEN;
 process.env.ZODIAC_SCHEDULER = "off";
+// Never spawn a real `claude` CLI from tests; tests inject localAnalyzer stubs.
+process.env.ZODIAC_LOCAL_CLAUDE = "off";

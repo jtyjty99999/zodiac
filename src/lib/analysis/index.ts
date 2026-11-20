@@ -9,15 +9,26 @@ import {
   updateCommitAnalysis,
 } from "../db/repositories/commits";
 import { getHarnessById } from "../db/repositories/harnesses";
+import { getClaudeCodeStatus } from "../explore/claudeCode";
+import { getExplorationEngineSettings } from "../explore/engineSettings";
 import { readPatch } from "../git/log";
 import { mirrorPath } from "../git/mirror";
 import { readDiff } from "../git/storage";
 import type { Commit, CommitCategory, Harness } from "../types";
-import { type AiConfig, analyzeWithClaude, getAiConfig } from "./anthropic";
+import {
+  type AiAnalysis,
+  type AiCommitContext,
+  type AiConfig,
+  analyzeWithClaude,
+  getAiConfig,
+} from "./anthropic";
 import { classifyCommit } from "./classify";
 import { refreshDailyReport } from "./daily";
 import { extractTags, heuristicSummary, suggestCandidate } from "./heuristic";
+import { analyzeWithLocalClaude } from "./localClaude";
 import { rateCommit } from "./rating";
+
+export type AnalyzedBy = "heuristic" | "heuristic+claude" | "claude-code";
 
 export interface AnalyzeOptions {
   useAi?: boolean;
@@ -25,6 +36,9 @@ export interface AnalyzeOptions {
   diffText?: string | null;
   force?: boolean;
   candidate?: boolean;
+  /** Injectable local Claude Code reviewer; tests use this to avoid spawning a CLI. */
+  localAnalyzer?: (context: AiCommitContext) => Promise<AiAnalysis | null>;
+  localTimeoutMs?: number;
   /** Refresh the day's report digest after this commit (batch callers opt out). */
   daily?: boolean;
 }
@@ -33,8 +47,37 @@ export interface AnalyzeOutcome {
   commitId: number;
   category: CommitCategory;
   rating: number;
-  analyzedBy: "heuristic" | "heuristic+claude";
+  analyzedBy: AnalyzedBy;
   candidateId: number | null;
+}
+
+const LOCAL_STATUS_TTL_MS = 60_000;
+let localStatusCache: { command: string; checkedAt: number; available: boolean } | null = null;
+
+/** `ZODIAC_LOCAL_CLAUDE=off` disables the local CLI fallback entirely. */
+function isLocalClaudeEnabled(): boolean {
+  return process.env.ZODIAC_LOCAL_CLAUDE !== "off";
+}
+
+/** Local CLI availability is cached so a sync does not probe once per commit. */
+async function isLocalClaudeAvailable(command: string): Promise<boolean> {
+  if (!isLocalClaudeEnabled()) return false;
+  const now = Date.now();
+  if (
+    localStatusCache &&
+    localStatusCache.command === command &&
+    now - localStatusCache.checkedAt < LOCAL_STATUS_TTL_MS
+  ) {
+    return localStatusCache.available;
+  }
+  const status = await getClaudeCodeStatus(command);
+  localStatusCache = { command, checkedAt: now, available: status.available };
+  return status.available;
+}
+
+function normalizeAnalyzedBy(value: string | null): AnalyzedBy {
+  if (value === "heuristic+claude" || value === "claude-code") return value;
+  return "heuristic";
 }
 
 async function resolveDiff(
@@ -45,7 +88,7 @@ async function resolveDiff(
   if (options.diffText !== undefined) return options.diffText;
   const stored = readDiff(commit.diffPath);
   if (stored !== null) return stored;
-  if (!options.useAi) return null;
+  if (options.useAi === false) return null;
 
   try {
     const dir = mirrorPath(harness.slug);
@@ -69,7 +112,7 @@ export async function analyzeCommitById(
       commitId: commit.id,
       category: commit.category ?? "other",
       rating: commit.rating ?? 3,
-      analyzedBy: commit.analyzedBy === "heuristic+claude" ? "heuristic+claude" : "heuristic",
+      analyzedBy: normalizeAnalyzedBy(commit.analyzedBy),
       candidateId: null,
     };
   }
@@ -92,6 +135,7 @@ export async function analyzeCommitById(
     insertions: commit.insertions,
     deletions: commit.deletions,
     filesChanged: commit.filesChanged,
+    files: files.map((file) => file.path),
   });
   const heuristic = heuristicSummary({
     subject: commit.subject,
@@ -112,40 +156,59 @@ export async function analyzeCommitById(
   };
 
   const aiConfig = options.aiConfig ?? getAiConfig(db);
-  const useAi = options.useAi !== false && aiConfig.enabled;
+  const useModel = options.useAi !== false;
   let aiCandidate: { name: string; description: string; moduleKey: string | null } | null = null;
 
-  if (useAi) {
+  if (useModel) {
     const diff = await resolveDiff(commit, harness, options);
-    const ai = await analyzeWithClaude(
-      {
-        repo: harness.repoUrl,
-        sha: commit.sha,
-        subject: commit.subject,
-        body: commit.body,
-        files: files.map((file) => ({
-          path: file.path,
-          additions: file.additions,
-          deletions: file.deletions,
-        })),
-        diff,
-      },
-      aiConfig,
-    );
-    if (ai) {
+    const context: AiCommitContext = {
+      repo: harness.repoUrl,
+      sha: commit.sha,
+      subject: commit.subject,
+      body: commit.body,
+      files: files.map((file) => ({
+        path: file.path,
+        additions: file.additions,
+        deletions: file.deletions,
+      })),
+      diff,
+    };
+
+    // Automatic engine: Anthropic API first, then the local Claude Code CLI.
+    let reviewed: AiAnalysis | null = null;
+    let analyzedBy: AnalyzedBy = "heuristic+claude";
+    if (aiConfig.enabled) {
+      reviewed = await analyzeWithClaude(context, aiConfig);
+    }
+    if (!reviewed) {
+      if (options.localAnalyzer) {
+        reviewed = await options.localAnalyzer(context);
+      } else {
+        const { command } = getExplorationEngineSettings(db);
+        if (await isLocalClaudeAvailable(command)) {
+          reviewed = await analyzeWithLocalClaude(context, {
+            command,
+            timeoutMs: options.localTimeoutMs,
+          });
+        }
+      }
+      if (reviewed) analyzedBy = "claude-code";
+    }
+
+    if (reviewed) {
       analysis = {
-        category: ai.category,
-        rating: ai.rating,
-        ratingReason: ai.ratingReason,
-        summaryMd: ai.summary,
-        featureTags: ai.tags.length > 0 ? ai.tags : heuristic.tags,
-        analyzedBy: "heuristic+claude",
+        category: reviewed.category,
+        rating: reviewed.rating,
+        ratingReason: reviewed.ratingReason,
+        summaryMd: reviewed.summary,
+        featureTags: reviewed.tags.length > 0 ? reviewed.tags : heuristic.tags,
+        analyzedBy,
       };
-      if (ai.candidate) {
+      if (reviewed.candidate) {
         aiCandidate = {
-          name: ai.candidate.name,
-          description: ai.candidate.description,
-          moduleKey: ai.candidate.moduleKey,
+          name: reviewed.candidate.name,
+          description: reviewed.candidate.description,
+          moduleKey: reviewed.candidate.moduleKey,
         };
       }
     }
@@ -188,7 +251,7 @@ export async function analyzeCommitById(
     commitId,
     category: analysis.category,
     rating: analysis.rating,
-    analyzedBy: analysis.analyzedBy === "heuristic+claude" ? "heuristic+claude" : "heuristic",
+    analyzedBy: analysis.analyzedBy as AnalyzedBy,
     candidateId,
   };
 }
@@ -198,6 +261,8 @@ export interface BatchAnalyzeOptions {
   useAi?: boolean;
   aiBudget?: number;
   getDiff?: (commit: Commit) => Promise<string | null>;
+  localAnalyzer?: (context: AiCommitContext) => Promise<AiAnalysis | null>;
+  localTimeoutMs?: number;
 }
 
 export interface BatchAnalyzeResult {
@@ -216,28 +281,36 @@ export async function analyzeCommits(
   const limit = Math.min(options.limit ?? commits.length, commits.length);
   const budget =
     options.useAi === false ? 0 : Math.min(options.aiBudget ?? aiConfig.maxPerSync, limit);
+  let modelAttempts = 0;
   let aiUsed = 0;
   let analyzed = 0;
   let candidates = 0;
   const days = new Set<string>();
 
   for (const commit of commits.slice(0, limit)) {
-    const canUseAi = aiConfig.enabled && aiUsed < budget && options.useAi !== false;
+    // Attempts, not successes, consume the budget: a failing local CLI should
+    // not be retried for every commit in the same sync.
+    const canUseModel = modelAttempts < budget;
     let diffText: string | null | undefined;
-    if (canUseAi && options.getDiff) {
-      diffText = await options.getDiff(commit).catch(() => null);
+    if (canUseModel) {
+      modelAttempts += 1;
+      if (options.getDiff) {
+        diffText = await options.getDiff(commit).catch(() => null);
+      }
     }
 
     const outcome = await analyzeCommitById(db, commit.id, {
-      useAi: canUseAi,
+      useAi: canUseModel,
       aiConfig,
       diffText,
       daily: false,
+      localAnalyzer: options.localAnalyzer,
+      localTimeoutMs: options.localTimeoutMs,
     });
     if (!outcome) continue;
 
     analyzed += 1;
-    if (outcome.analyzedBy === "heuristic+claude") aiUsed += 1;
+    if (outcome.analyzedBy !== "heuristic") aiUsed += 1;
     if (outcome.candidateId) candidates += 1;
     days.add(commit.day);
   }

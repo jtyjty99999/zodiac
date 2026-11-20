@@ -1,6 +1,13 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { type AiCommitContext, analyzeWithClaude, getAiConfig } from "@/lib/analysis/anthropic";
+import {
+  AI_RESULT_JSON_SCHEMA,
+  type AiCommitContext,
+  analyzeWithClaude,
+  buildUserPrompt,
+  COMMIT_REVIEW_SYSTEM_PROMPT,
+  getAiConfig,
+} from "@/lib/analysis/anthropic";
 import { openDatabase } from "@/lib/db/client";
 import { migrate } from "@/lib/db/migrate";
 import { setSetting } from "@/lib/db/repositories/settings";
@@ -32,8 +39,9 @@ const context: AiCommitContext = {
 const validPayload = {
   category: "feature",
   rating: 4,
-  ratingReason: "新增 MCP 传输层",
-  summary: "新增 MCP stdio 传输，扩展了工具生态。",
+  ratingReason: "新增 MCP 传输层，扩展工具生态，影响所有 MCP 用户。",
+  summary:
+    "**解决的问题**\n\n外部工具无法通过 stdio 接入。\n\n**实现思路**\n\n新增 transport 层并在启动时注册。\n\n**影响与风险**\n\n新增协议入口，需要关注权限校验。",
   tags: ["mcp"],
   candidate: { name: "MCP stdio transport", description: "stdio 传输", moduleKey: "mcp" },
 };
@@ -198,5 +206,40 @@ describe("analyzeWithClaude", () => {
       expect(result).not.toBeNull();
       expect(result?.candidate).toBeUndefined();
     });
+  });
+});
+
+describe("commit review prompt", () => {
+  test("asks for review sections and judges importance, not diff size", () => {
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**解决的问题**");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**实现思路**");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**影响与风险**");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("不是改动行数");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("不可信数据");
+  });
+
+  test("builds a user prompt with metadata and a fenced diff", () => {
+    const prompt = buildUserPrompt({ ...context, diff: "diff --git a/x b/x\n+hello\n" });
+    expect(prompt).toContain("feat: add MCP stdio transport");
+    expect(prompt).toContain("src/mcp.ts (+120/-3)");
+    expect(prompt).toContain("```diff");
+    expect(prompt).toContain("+hello");
+  });
+
+  test("says so when no diff was captured", () => {
+    const prompt = buildUserPrompt(context);
+    expect(prompt).toContain("diff 未抓取");
+  });
+
+  test("exports a JSON schema matching the review output", () => {
+    expect(AI_RESULT_JSON_SCHEMA.required).toEqual([
+      "category",
+      "rating",
+      "ratingReason",
+      "summary",
+      "tags",
+      "candidate",
+    ]);
+    expect(AI_RESULT_JSON_SCHEMA.properties.rating).toMatchObject({ minimum: 1, maximum: 5 });
   });
 });

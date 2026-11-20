@@ -1,7 +1,7 @@
-import { execFile } from "node:child_process";
 import path from "node:path";
 import { z } from "zod";
-import { extractJson } from "../analysis/claudeJson";
+import type { ClaudeCommandOptions } from "../claude/cli";
+import { parseClaudeOutput, runClaudeCommand } from "../claude/cli";
 import type { Db } from "../db/client";
 import { isSafeRepoPath, isValidSearchPattern, readBlob } from "../git/search";
 import {
@@ -24,7 +24,6 @@ import {
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 const VERSION_TIMEOUT_MS = 5_000;
-const MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 const MAX_EVIDENCE_FILES = 8;
 const MAX_LINES_PER_FILE = 3;
 const MAX_PATTERNS = 12;
@@ -190,55 +189,6 @@ export interface ClaudeCodeExplorationOptions {
   timeoutMs?: number;
 }
 
-interface CommandResult {
-  stdout: string;
-  stderr: string;
-}
-
-interface CommandOptions {
-  cwd?: string;
-  timeoutMs: number;
-  maxBytes?: number;
-}
-
-function runCommand(
-  command: string,
-  args: string[],
-  options: CommandOptions,
-): Promise<CommandResult> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      command,
-      args,
-      {
-        cwd: options.cwd,
-        timeout: options.timeoutMs,
-        maxBuffer: options.maxBytes ?? MAX_OUTPUT_BYTES,
-        env: process.env,
-        windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        if (error) {
-          // Never include error.message here: execFile echoes the full argv,
-          // which contains the research prompt and system prompt.
-          const reason = error.killed
-            ? `timed out after ${options.timeoutMs}ms`
-            : typeof error.code === "string"
-              ? error.code
-              : `exit ${error.code ?? "?"}`;
-          const detail = stderr?.trim() || reason;
-          reject(new Error(`${command} failed: ${detail.slice(0, 500)}`));
-          return;
-        }
-        resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
-      },
-    );
-    // Headless runs pass the prompt as an argument; leaving stdin open makes
-    // Claude Code wait for piped input and emit a "no stdin data" warning.
-    child.stdin?.end();
-  });
-}
-
 /** Checks whether a local `claude` command is runnable and returns its version. */
 export async function getClaudeCodeStatus(
   command: string = CLAUDE_CODE_DEFAULT_COMMAND,
@@ -248,7 +198,7 @@ export async function getClaudeCodeStatus(
     return { available: false, version: null, command };
   }
   try {
-    const { stdout } = await runCommand(command.trim(), ["--version"], {
+    const { stdout } = await runClaudeCommand(command.trim(), ["--version"], {
       timeoutMs,
       maxBytes: 64 * 1024,
     });
@@ -259,33 +209,7 @@ export async function getClaudeCodeStatus(
   }
 }
 
-function parseCliOutput(stdout: string): unknown {
-  let wrapper: unknown;
-  try {
-    wrapper = JSON.parse(stdout);
-  } catch {
-    return extractJson(stdout);
-  }
-  if (wrapper && typeof wrapper === "object") {
-    const record = wrapper as Record<string, unknown>;
-    if (record.is_error === true) {
-      throw new Error(
-        typeof record.result === "string"
-          ? record.result.slice(0, 500)
-          : "Claude Code reported an error",
-      );
-    }
-    if (record.structured_output !== undefined) {
-      return typeof record.structured_output === "string"
-        ? extractJson(record.structured_output)
-        : record.structured_output;
-    }
-    if (typeof record.result === "string") return extractJson(record.result);
-  }
-  return wrapper;
-}
-
-async function runClaudeCode(prompt: string, options: CommandOptions & { command: string }) {
+async function runClaudeCode(prompt: string, options: ClaudeCommandOptions & { command: string }) {
   const args = [
     "-p",
     prompt,
@@ -307,8 +231,8 @@ async function runClaudeCode(prompt: string, options: CommandOptions & { command
     "--json-schema",
     JSON.stringify(RESULT_JSON_SCHEMA),
   ];
-  const { stdout } = await runCommand(options.command, args, options);
-  return claudeCodeResultSchema.parse(normalizeCliResult(parseCliOutput(stdout)));
+  const { stdout } = await runClaudeCommand(options.command, args, options);
+  return claudeCodeResultSchema.parse(normalizeCliResult(parseClaudeOutput(stdout)));
 }
 
 function snapshotName(index: number, slug: string): string {

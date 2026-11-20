@@ -3,6 +3,7 @@
 import { Sparkles } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { analyzedByLabel } from "@/lib/analysis/labels";
 
 export default function CommitAnalyzeButton({ commitId }: { commitId: number }) {
   const router = useRouter();
@@ -26,7 +27,7 @@ export default function CommitAnalyzeButton({ commitId }: { commitId: number }) 
         setMessage(payload.error ?? "分析失败");
         return;
       }
-      const engine = payload.data?.analyzedBy === "heuristic+claude" ? "启发式 + Claude" : "启发式";
+      const engine = analyzedByLabel(payload.data?.analyzedBy);
       setMessage(
         payload.data?.candidateId
           ? `已重新分析（${engine}），并生成候选 #${payload.data.candidateId}`

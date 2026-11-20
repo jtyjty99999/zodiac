@@ -264,4 +264,27 @@ CREATE INDEX IF NOT EXISTS idx_explorations_created ON explorations(created_at D
 CREATE INDEX IF NOT EXISTS idx_explorations_status ON explorations(status, created_at);
 `,
   },
+  {
+    version: 4,
+    name: "feature_audits",
+    // An on-demand AI re-audit of one feature: the engine reads every harness
+    // mirror and rewrites the feature's support status, implementation details
+    // and comparison summary. The catalog version is recorded for rollback.
+    sql: `
+CREATE TABLE IF NOT EXISTS feature_audits (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  feature_id INTEGER NOT NULL REFERENCES features(id) ON DELETE CASCADE,
+  status TEXT NOT NULL DEFAULT 'running',
+  engine TEXT NOT NULL DEFAULT 'claude-code',
+  version TEXT,
+  result_json TEXT,
+  report_md TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_feature_audits_feature ON feature_audits(feature_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feature_audits_status ON feature_audits(status, created_at);
+`,
+  },
 ];

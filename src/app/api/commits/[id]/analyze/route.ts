@@ -23,9 +23,10 @@ export async function POST(request: Request, { params }: Params) {
     if (!commit) return apiError("提交不存在", 404);
 
     const config = getAiConfig(db);
+    // Automatic engine: API when configured, otherwise the local Claude Code CLI.
     const outcome = await analyzeCommitById(db, id, {
       force: true,
-      useAi: config.enabled,
+      useAi: true,
       aiConfig: config,
     });
     if (!outcome) return apiError("分析失败", 500);

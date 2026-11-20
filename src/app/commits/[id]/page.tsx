@@ -11,6 +11,7 @@ import {
   RelativeTime,
   SectionCard,
 } from "@/components/ui";
+import { analyzedByLabel } from "@/lib/analysis/labels";
 import { getDb } from "@/lib/db/client";
 import { getCommitById, listCommitFiles } from "@/lib/db/repositories/commits";
 import { getHarnessById } from "@/lib/db/repositories/harnesses";
@@ -93,7 +94,7 @@ export default async function CommitDetailPage({ params }: { params: Promise<{ i
         </div>
         <div className="card p-3">
           <div className="text-[10px] uppercase tracking-wider text-muted">分析引擎</div>
-          <div className="mt-1 text-xs">{commit.analyzedBy ?? "未分析"}</div>
+          <div className="mt-1 text-xs">{analyzedByLabel(commit.analyzedBy)}</div>
           <div className="mt-0.5 text-[10px] text-muted">
             <RelativeTime iso={commit.analyzedAt} />
           </div>
@@ -103,7 +104,7 @@ export default async function CommitDetailPage({ params }: { params: Promise<{ i
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-4">
           {commit.summaryMd || commit.ratingReason ? (
-            <SectionCard title="点评">
+            <SectionCard title="评审">
               {commit.summaryMd ? <MarkdownView content={commit.summaryMd} /> : null}
               {commit.ratingReason ? (
                 <p className="mt-3 border-t border-line pt-3 text-xs text-muted">
@@ -113,9 +114,9 @@ export default async function CommitDetailPage({ params }: { params: Promise<{ i
               ) : null}
             </SectionCard>
           ) : (
-            <SectionCard title="点评">
+            <SectionCard title="评审">
               <p className="text-xs text-muted">
-                尚未分析。点击右上角「重新分析」生成分类、评级与点评。
+                尚未分析。点击右上角「重新分析」生成分类、评级与评审。
               </p>
             </SectionCard>
           )}

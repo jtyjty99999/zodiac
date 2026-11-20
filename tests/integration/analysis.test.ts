@@ -106,14 +106,47 @@ describe("analyzeCommitById", () => {
     expect(listCandidates(db)).toHaveLength(1);
   });
 
-  test("falls back to heuristics when AI is enabled but unavailable", async () => {
+  test("falls back to heuristics when API and local CLI are unavailable", async () => {
     const { db, featureId } = seeded();
     const outcome = await analyzeCommitById(db, featureId, {
       aiConfig: { enabled: true, hasKey: false, model: "claude-sonnet-5", maxPerSync: 5 },
       diffText: "diff --git a/x b/x\n+hello\n",
+      localAnalyzer: async () => null,
     });
     expect(outcome?.analyzedBy).toBe("heuristic");
     expect(getCommitById(db, featureId)?.analyzedBy).toBe("heuristic");
+  });
+
+  test("uses the local Claude Code reviewer when the API is unavailable", async () => {
+    const { db, featureId } = seeded();
+    const outcome = await analyzeCommitById(db, featureId, {
+      aiConfig: { enabled: false, hasKey: false, model: "claude-sonnet-5", maxPerSync: 5 },
+      diffText: "diff --git a/x b/x\n+hello\n",
+      localAnalyzer: async () => ({
+        category: "feature",
+        rating: 4,
+        ratingReason: "本地评审：新增 MCP 传输层。",
+        summary:
+          "**解决的问题**\n\n需要 MCP。\n\n**实现思路**\n\n新增传输层。\n\n**影响与风险**\n\n新增入口。",
+        tags: ["mcp"],
+        candidate: null,
+      }),
+    });
+
+    expect(outcome?.analyzedBy).toBe("claude-code");
+    const stored = getCommitById(db, featureId)!;
+    expect(stored.analyzedBy).toBe("claude-code");
+    expect(stored.summaryMd).toContain("**实现思路**");
+    expect(stored.rating).toBe(4);
+  });
+
+  test("skips the local reviewer when model analysis is disabled", async () => {
+    const { db, featureId } = seeded();
+    const localAnalyzer = async () => {
+      throw new Error("should not be called");
+    };
+    const outcome = await analyzeCommitById(db, featureId, { useAi: false, localAnalyzer });
+    expect(outcome?.analyzedBy).toBe("heuristic");
   });
 
   test("can skip candidate creation", async () => {

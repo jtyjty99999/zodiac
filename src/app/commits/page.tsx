@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { CategoryBadge, EmptyState, MarkdownView, PageHeader, RatingStars } from "@/components/ui";
 import { categoryLabel } from "@/lib/analysis/classify";
+import { analyzedByLabel } from "@/lib/analysis/labels";
 import { getDb } from "@/lib/db/client";
 import { countCommits, listCommits } from "@/lib/db/repositories/commits";
 import { listHarnesses } from "@/lib/db/repositories/harnesses";
@@ -243,7 +244,9 @@ export default async function CommitsPage({
                           <span className="text-danger">-{commit.deletions}</span>
                           <div className="text-[10px] text-muted">{commit.filesChanged} 文件</div>
                         </td>
-                        <td className="text-[10px] text-muted">{commit.analyzedBy ?? "—"}</td>
+                        <td className="text-[10px] text-muted">
+                          {analyzedByLabel(commit.analyzedBy)}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

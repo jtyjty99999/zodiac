@@ -1,5 +1,6 @@
 import type { CommitCategory } from "../types";
 import { categoryLabel } from "./classify";
+import { isCorePath, isTestPath } from "./paths";
 
 export interface HeuristicInput {
   subject: string;
@@ -119,53 +120,102 @@ export interface HeuristicAnalysis {
   summaryMd: string;
 }
 
-export function heuristicSummary(input: HeuristicInput): HeuristicAnalysis {
-  const tags = extractTags(input);
-  const churn = input.insertions + input.deletions;
-  const paths = topPaths(input.files);
-  const fileLine =
-    paths.length > 0 ? `- 主要文件：${paths.join("、")}` : "- 主要文件：无文件清单（浅抓取）";
-  const tagLine =
-    tags.length > 0 ? `- 涉及领域：${tags.map((tag) => `\`${tag}\``).join("、")}` : "";
+const SECURITY_HINTS =
+  /(?:security|vulnerab|injection|\bauth\b|permission|sandbox|secret|安全|漏洞|注入|权限|沙箱)/i;
 
-  const commentary = buildCommentary(input, churn, tags);
-
-  const summaryMd = [
-    `> ${commentary}`,
-    "",
-    `- 分类：${categoryLabel(input.category)}`,
-    `- 规模：${input.files.length} 个文件，+${input.insertions} / -${input.deletions}`,
-    fileLine,
-    tagLine,
-  ]
-    .filter((line) => line !== "")
-    .join("\n");
-
-  return { tags, summaryMd };
+function cleanSubject(subject: string): string {
+  const cleaned = subject
+    .replace(/^[a-zA-Z]+(?:\([^)]*\))?!?:\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return cleaned || subject.trim();
 }
 
-function buildCommentary(input: HeuristicInput, churn: number, tags: string[]): string {
-  const scope = tags.length > 0 ? tags.slice(0, 3).join(" / ") : "核心运行时";
+function problemSection(input: HeuristicInput, tags: string[]): string {
+  const subject = cleanSubject(input.subject);
+  const scope = tags.length > 0 ? tags.slice(0, 3).join(" / ") : "相关模块";
   switch (input.category) {
     case "feature":
-      return churn >= 500
-        ? `这是一次规模较大的功能迭代，主要围绕 ${scope} 展开，值得关注其接口与行为变化。`
-        : `新增或增强了 ${scope} 相关能力，属于常规功能迭代。`;
+      return `新增或增强了「${subject}」相关能力，主要涉及 ${scope}。`;
     case "bugfix":
-      return `修复了与 ${scope} 相关的缺陷，关注是否附带回归测试。`;
+      return `修复「${subject}」所描述的问题，涉及 ${scope}。`;
     case "performance":
-      return `针对 ${scope} 的性能优化，建议结合基准或延迟数据评估收益。`;
+      return `改善 ${scope} 的性能或延迟，目标见提交说明「${subject}」。`;
     case "refactor":
-      return `对 ${scope} 进行了结构调整，通常不改变外部行为，但可能影响扩展点。`;
+      return `在不改变外部行为的前提下重整 ${scope} 的结构。`;
     case "docs":
-      return `文档与说明类更新，帮助理解 ${scope} 的使用方式。`;
+      return `补充或修正 ${scope} 的文档与说明。`;
     case "test":
-      return `补充或调整测试，覆盖 ${scope} 的相关行为。`;
+      return `补充或调整 ${scope} 的测试覆盖。`;
     case "tooling":
-      return `工程/构建/依赖相关调整，影响 ${scope} 的开发与发布流程。`;
+      return `调整构建、依赖或开发流程（${subject}）。`;
     default:
-      return "零散改动，未匹配到明确的领域信号。";
+      return `「${subject}」：未匹配到明确的领域信号。`;
   }
+}
+
+function approachSection(input: HeuristicInput, tags: string[]): string {
+  const fileCount = input.files.length;
+  const scale =
+    fileCount > 0
+      ? `改动 ${fileCount} 个文件（+${input.insertions} / -${input.deletions}）`
+      : `改动规模 +${input.insertions} / -${input.deletions}（无文件清单）`;
+  const paths = topPaths(input.files, 4);
+  const dirs = [...new Set(input.files.map((file) => file.path.split("/").slice(0, 2).join("/")))]
+    .slice(0, 3)
+    .map((dir) => `\`${dir}\``)
+    .join("、");
+  const lines = [scale + (dirs ? `，主要位于 ${dirs}` : "") + "。"];
+  if (tags.length > 0) lines.push(`涉及领域：${tags.map((tag) => `\`${tag}\``).join("、")}。`);
+  if (paths.length > 0) lines.push(`主要文件：${paths.join("、")}。`);
+  lines.push("未读取 diff，具体实现路径只能从提交信息与文件分布推断。");
+  return lines.join("\n");
+}
+
+function impactSection(input: HeuristicInput): string {
+  const text = `${input.subject}\n${input.body ?? ""}`;
+  const risks: string[] = [];
+  if (input.files.some((file) => isCorePath(file.path))) {
+    risks.push("触及核心运行时路径，可能影响所有使用者，需要关注回归。");
+  }
+  if (SECURITY_HINTS.test(text)) {
+    risks.push("涉及权限、沙箱或安全边界，建议优先复核。");
+  }
+  if (
+    (input.category === "feature" || input.category === "bugfix") &&
+    input.files.length > 0 &&
+    !input.files.some((file) => isTestPath(file.path))
+  ) {
+    risks.push("变更中未见测试文件，回归覆盖可能不足。");
+  }
+  if (input.category === "docs" || input.category === "test") {
+    risks.push("对外行为影响有限。");
+  }
+  if (risks.length === 0) {
+    risks.push("影响面限于相关模块，未见明显破坏性或安全信号。");
+  }
+  return risks.join("");
+}
+
+export function heuristicSummary(input: HeuristicInput): HeuristicAnalysis {
+  const tags = extractTags(input);
+  const summaryMd = [
+    "**解决的问题**",
+    "",
+    problemSection(input, tags),
+    "",
+    "**实现思路**",
+    "",
+    approachSection(input, tags),
+    "",
+    "**影响与风险**",
+    "",
+    impactSection(input),
+    "",
+    `> 启发式点评（未读取 diff）：分类为${categoryLabel(input.category)}，仅依据提交信息与文件清单推断，结论可能不完整。`,
+  ].join("\n");
+
+  return { tags, summaryMd };
 }
 
 export interface CandidateSuggestion {

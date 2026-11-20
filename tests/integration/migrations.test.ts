@@ -20,6 +20,7 @@ const EXPECTED_TABLES = [
   "candidate_checks",
   "settings",
   "explorations",
+  "feature_audits",
 ];
 
 describe("migrate", () => {

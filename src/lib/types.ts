@@ -189,6 +189,23 @@ export interface CatalogVersion {
   createdAt: string;
 }
 
+export type FeatureAuditStatus = "running" | "success" | "failed";
+export type FeatureAuditEngine = "claude" | "claude-code";
+
+export interface FeatureAudit {
+  id: number;
+  featureId: number;
+  status: FeatureAuditStatus;
+  engine: FeatureAuditEngine;
+  /** Catalog version created by a successful audit, for rollback. */
+  version: string | null;
+  resultJson: string | null;
+  reportMd: string | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
 export interface Candidate {
   id: number;
   harnessId: number;

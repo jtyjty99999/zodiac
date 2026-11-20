@@ -9,9 +9,9 @@
 ## 功能
 
 - **功能矩阵**：13 个模块、85 个功能点，按 ✓ / ◐ / ✗ / ? 标注各 harness 的支持状态，支持搜索、模块筛选与「仅看差异」。
-- **实现细节对比**：12 个核心功能（主循环、文件编辑、沙箱、系统提示、压缩、记忆、会话持久化、Provider、TUI、插件、MCP stdio、子智能体）逐项对比实现方式，附源码证据路径、横向差异总结与更新时间线。
+- **实现细节对比**：12 个核心功能（主循环、文件编辑、沙箱、系统提示、压缩、记忆、会话持久化、Provider、TUI、插件、MCP stdio、子智能体）逐项对比实现方式，附源码证据路径、横向差异总结与更新时间线。对比页支持**按功能点 AI 重审**：模型读取各 harness 的代码快照，重新判断支持状态、整理实现细节与横向差异，直接写入功能矩阵并生成可回滚的基线版本；引擎优先 Anthropic API，回退本地 Claude Code CLI，证据中的 `path:line` 会回到镜像逐一验证。
 - **提交与发版跟踪**：bare git mirror 抓取提交，GitHub Releases API（失败回退 tags）；手动「立即跟进」或按 harness 配置每小时/每天自动同步。
-- **自动分析**：启发式分类（feature / performance / bugfix / refactor / docs / test / tooling / other）、1–5 星评级、中文点评与功能标签；配置 `ANTHROPIC_API_KEY` 后可启用 Claude 增强分析，失败自动回退启发式。
+- **自动分析**：启发式分类（feature / performance / bugfix / refactor / docs / test / tooling / other）、1–5 星评级、评审式中文点评（解决的问题 / 实现思路 / 影响与风险）与功能标签；分析引擎自动选择：优先 Anthropic API，未配置或失败时回退本地 Claude Code CLI，再失败回退启发式。评级依据功能重要性、影响面与风险，不按改动行数加分。
 - **按天归档**：每个 harness 每天聚合提交、分类统计、发版记录与重点点评。
 - **基线演进**：人工编辑支持状态或确认新功能候选后，自动生成带日期的基线版本与功能历史，可导出 JSON / Markdown。
 - **新功能候选**：从 feature 类提交中提炼候选，自动对其它 harness 做目录相似度与提交历史交叉检查，人工接受或驳回。
@@ -50,15 +50,16 @@ pnpm sync --harness codex   # 只同步 codex
 
 ## 环境变量
 
-| 变量                | 说明                         | 默认               |
-| ------------------- | ---------------------------- | ------------------ |
-| `ZODIAC_DATA_DIR`   | mirror、diff、数据库所在目录 | `./data`           |
-| `ZODIAC_DB_PATH`    | 直接指定 SQLite 文件路径     | `data/zodiac.db`   |
-| `ZODIAC_TZ`         | 按天归档所用时区             | `Asia/Shanghai`    |
-| `ZODIAC_SCHEDULER`  | 设为 `off` 关闭应用内调度器  | 开启               |
-| `ANTHROPIC_API_KEY` | 启用 Claude 增强分析         | 未设置（仅启发式） |
-| `ANTHROPIC_MODEL`   | Claude 模型 ID               | `claude-sonnet-5`  |
-| `GITHUB_TOKEN`      | Releases API 鉴权，降低限流  | 未设置             |
+| 变量                  | 说明                                 | 默认               |
+| --------------------- | ------------------------------------ | ------------------ |
+| `ZODIAC_DATA_DIR`     | mirror、diff、数据库所在目录         | `./data`           |
+| `ZODIAC_DB_PATH`      | 直接指定 SQLite 文件路径             | `data/zodiac.db`   |
+| `ZODIAC_TZ`           | 按天归档所用时区                     | `Asia/Shanghai`    |
+| `ZODIAC_SCHEDULER`    | 设为 `off` 关闭应用内调度器          | 开启               |
+| `ZODIAC_LOCAL_CLAUDE` | 设为 `off` 禁用本地 Claude Code 回退 | 开启               |
+| `ANTHROPIC_API_KEY`   | 启用 Claude 增强分析                 | 未设置（仅启发式） |
+| `ANTHROPIC_MODEL`     | Claude 模型 ID                       | `claude-sonnet-5`  |
+| `GITHUB_TOKEN`        | Releases API 鉴权，降低限流          | 未设置             |
 
 密钥只从环境变量读取，不会写入数据库或页面。
 
@@ -113,7 +114,7 @@ pnpm reanalyze --harness codex      # 只重算某个 harness
 ```bash
 pnpm lint        # Biome（格式 + 规则）
 pnpm typecheck
-pnpm test        # Vitest，293 个用例，src/lib 覆盖率门槛 80%
+pnpm test        # Vitest，320 个用例，src/lib 覆盖率门槛 80%
 pnpm e2e         # Playwright，首次运行前执行 pnpm exec playwright install chromium
 ```
 

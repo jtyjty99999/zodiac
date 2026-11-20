@@ -48,7 +48,7 @@ describe("guessModuleKey", () => {
 });
 
 describe("heuristicSummary", () => {
-  test("builds a markdown summary with category, scale, files and tags", () => {
+  test("renders a review with problem, approach and impact sections", () => {
     const { summaryMd, tags } = heuristicSummary({
       subject: "feat: add MCP transport",
       body: null,
@@ -58,10 +58,15 @@ describe("heuristicSummary", () => {
       deletions: 30,
     });
     expect(tags).toContain("mcp");
-    expect(summaryMd).toContain("功能迭代");
+    expect(summaryMd).toContain("**解决的问题**");
+    expect(summaryMd).toContain("add MCP transport");
+    expect(summaryMd).toContain("**实现思路**");
     expect(summaryMd).toContain("2 个文件");
     expect(summaryMd).toContain("`src/mcp/client.ts`");
     expect(summaryMd).toContain("涉及领域");
+    expect(summaryMd).toContain("**影响与风险**");
+    expect(summaryMd).toContain("未见测试文件");
+    expect(summaryMd).toContain("未读取 diff");
   });
 
   test("notes when no file list is available", () => {
@@ -73,20 +78,33 @@ describe("heuristicSummary", () => {
       insertions: 1,
       deletions: 1,
     });
-    expect(summaryMd).toContain("浅抓取");
+    expect(summaryMd).toContain("无文件清单");
     expect(summaryMd).not.toContain("涉及领域");
   });
 
-  test("uses large-change wording for big feature commits", () => {
+  test("flags core-runtime and security impact", () => {
     const { summaryMd } = heuristicSummary({
-      subject: "feat: rework everything",
+      subject: "fix: sandbox escape in permission checks",
       body: null,
-      category: "feature",
-      files: [{ path: "src/a.ts" }],
-      insertions: 600,
-      deletions: 100,
+      category: "bugfix",
+      files: [{ path: "src/core/permissions.ts" }],
+      insertions: 8,
+      deletions: 2,
     });
-    expect(summaryMd).toContain("规模较大的功能迭代");
+    expect(summaryMd).toContain("核心运行时");
+    expect(summaryMd).toContain("安全边界");
+  });
+
+  test("keeps documentation changes low-impact", () => {
+    const { summaryMd } = heuristicSummary({
+      subject: "docs: explain tools",
+      body: null,
+      category: "docs",
+      files: [{ path: "docs/tools.md" }],
+      insertions: 40,
+      deletions: 0,
+    });
+    expect(summaryMd).toContain("对外行为影响有限");
   });
 });
 

@@ -1,11 +1,22 @@
 import { ArrowLeft, ArrowRight, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import FeatureAuditButton from "@/components/FeatureAuditButton";
 import SupportEditor from "@/components/SupportEditor";
 import { MarkdownView, PageHeader, SupportBadge } from "@/components/ui";
 import { getCompareView } from "@/lib/catalog/matrix";
+import { getDb } from "@/lib/db/client";
+import { latestFeatureAudit } from "@/lib/db/repositories/featureAudits";
+import { featureAuditEngineLabel, featureAuditStatusLabel } from "@/lib/features/labels";
 
 export const metadata = { title: "功能对比" };
+
+function formatAuditTime(value: string | null): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString("zh-CN", { timeZone: "Asia/Shanghai", hour12: false });
+}
 
 export default async function CompareFeaturePage({
   params,
@@ -21,6 +32,7 @@ export default async function CompareFeaturePage({
   }
   const view = getCompareView(key);
   if (!view) notFound();
+  const latestAudit = latestFeatureAudit(getDb(), view.feature.id);
 
   const evidenceLines = (value: string | null): string[] =>
     (value ?? "")
@@ -56,6 +68,52 @@ export default async function CompareFeaturePage({
           </div>
         }
       />
+
+      <section className="card mb-5 p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="max-w-2xl">
+            <h2 className="text-sm font-semibold">AI 重审</h2>
+            <p className="mt-1 text-xs leading-relaxed text-muted">
+              模型会读取每个 harness
+              的代码快照，重新判断支持状态、整理实现细节与横向差异，并直接写入功能矩阵、生成可回滚的基线版本。
+            </p>
+            {latestAudit ? (
+              <p className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted">
+                <span className="chip">{featureAuditStatusLabel(latestAudit.status)}</span>
+                <span>{featureAuditEngineLabel(latestAudit.engine)}</span>
+                {latestAudit.finishedAt ? (
+                  <span>· {formatAuditTime(latestAudit.finishedAt)}</span>
+                ) : null}
+                {latestAudit.version ? (
+                  <span>
+                    · 基线 <span className="font-mono">{latestAudit.version}</span>
+                  </span>
+                ) : null}
+                {latestAudit.status === "failed" && latestAudit.error ? (
+                  <span className="text-danger">· {latestAudit.error}</span>
+                ) : null}
+              </p>
+            ) : (
+              <p className="mt-2 text-[11px] text-muted">尚未执行过 AI 重审。</p>
+            )}
+          </div>
+          <FeatureAuditButton
+            featureKey={view.feature.key}
+            featureName={view.feature.name}
+            initialRunning={latestAudit?.status === "running"}
+          />
+        </div>
+        {latestAudit?.status === "success" && latestAudit.reportMd ? (
+          <details className="mt-3 border-t border-line pt-3">
+            <summary className="cursor-pointer text-xs font-medium text-muted hover:text-ink">
+              查看最近一次重审报告
+            </summary>
+            <div className="mt-3">
+              <MarkdownView content={latestAudit.reportMd} />
+            </div>
+          </details>
+        ) : null}
+      </section>
 
       {view.feature.overviewMd || view.feature.diffSummaryMd ? (
         <section className="card mb-5 p-4">
