@@ -38,6 +38,7 @@ import {
   getHarnessBySlug,
   listHarnesses,
   recordSyncFailure,
+  recordSyncStart,
   recordSyncSuccess,
   updateHarness,
 } from "@/lib/db/repositories/harnesses";
@@ -53,8 +54,12 @@ import {
   failStaleRuns,
   finishSyncRun,
   getRunningSyncRun,
+  getSyncRun,
+  getSyncRunsByIds,
+  listRunningSyncRuns,
   listSyncRuns,
   startSyncRun,
+  touchSyncRun,
   updateSyncRunPhase,
 } from "@/lib/db/repositories/syncRuns";
 import { makeDb } from "./helpers";
@@ -126,6 +131,35 @@ describe("harness repository", () => {
     expect(success?.lastError).toBeNull();
     expect(success?.lastSha).toBe("f".repeat(40));
     expect(success?.lastSuccessAt).toBe("2026-11-19T00:00:00.000Z");
+  });
+
+  test("tracks attempt start separately from attempt finish", () => {
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "pi",
+      name: "Pi",
+      repoUrl: "https://github.com/a/pi",
+    });
+    expect(harness.lastAttemptAt).toBeNull();
+    expect(harness.lastSyncAt).toBeNull();
+
+    recordSyncStart(db, harness.id, { at: "2026-11-19T00:00:00.000Z" });
+    const running = getHarnessById(db, harness.id);
+    // The attempt is visible immediately...
+    expect(running?.lastAttemptAt).toBe("2026-11-19T00:00:00.000Z");
+    // ...but finishing timestamps stay untouched until the run ends.
+    expect(running?.lastSyncAt).toBeNull();
+    expect(running?.lastSuccessAt).toBeNull();
+
+    recordSyncFailure(db, harness.id, "boom", { at: "2026-11-19T00:05:00.000Z" });
+    const failed = getHarnessById(db, harness.id);
+    expect(failed?.lastSyncAt).toBe("2026-11-19T00:05:00.000Z");
+    expect(failed?.lastSuccessAt).toBeNull();
+
+    recordSyncSuccess(db, harness.id, { at: "2026-11-19T00:10:00.000Z" });
+    const done = getHarnessById(db, harness.id);
+    expect(done?.lastSyncAt).toBe("2026-11-19T00:10:00.000Z");
+    expect(done?.lastSuccessAt).toBe("2026-11-19T00:10:00.000Z");
   });
 });
 
@@ -316,12 +350,51 @@ describe("sync run repository", () => {
       repoUrl: "https://github.com/a/pi",
     });
     const run = startSyncRun(db, harness.id, "schedule");
-    db.prepare("UPDATE sync_runs SET started_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(
+    const staleAt = "2020-01-01T00:00:00.000Z";
+    db.prepare("UPDATE sync_runs SET started_at = ?, heartbeat_at = ? WHERE id = ?").run(
+      staleAt,
+      staleAt,
       run!.id,
     );
     expect(failStaleRuns(db)).toBe(1);
     expect(listSyncRuns(db, harness.id)[0].status).toBe("failed");
     expect(failStaleRuns(db)).toBe(0);
+  });
+
+  test("a fresh heartbeat protects a long-running run from stale cleanup", () => {
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "pi",
+      name: "Pi",
+      repoUrl: "https://github.com/a/pi",
+    });
+    const run = startSyncRun(db, harness.id, "schedule")!;
+    db.prepare("UPDATE sync_runs SET started_at = ? WHERE id = ?").run(
+      "2020-01-01T00:00:00.000Z",
+      run.id,
+    );
+    touchSyncRun(db, run.id);
+    expect(failStaleRuns(db)).toBe(0);
+    finishSyncRun(db, run.id, "success");
+  });
+
+  test("reads individual and active runs by id", () => {
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "pi",
+      name: "Pi",
+      repoUrl: "https://github.com/a/pi",
+    });
+    const first = startSyncRun(db, harness.id, "manual")!;
+    expect(getSyncRun(db, first.id)?.status).toBe("running");
+    expect(listRunningSyncRuns(db).map((run) => run.id)).toEqual([first.id]);
+    expect(getSyncRunsByIds(db, [first.id, 9999])).toHaveLength(1);
+
+    expect(getSyncRun(db, first.id)?.heartbeatAt).not.toBeNull();
+    finishSyncRun(db, first.id, "success");
+    expect(getSyncRun(db, first.id)?.finishedAt).not.toBeNull();
+    expect(listRunningSyncRuns(db)).toEqual([]);
+    expect(getSyncRunsByIds(db, [])).toEqual([]);
   });
 });
 

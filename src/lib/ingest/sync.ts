@@ -24,14 +24,16 @@ import { upsertReleases } from "../db/repositories/releases";
 import {
   finishSyncRun,
   getRunningSyncRun,
+  getSyncRun,
   startSyncRun,
+  touchSyncRun,
   updateSyncRunPhase,
 } from "../db/repositories/syncRuns";
 import { type LoggedCommit, readLog, readNumstat, readPatch } from "../git/log";
 import { ensureMirror } from "../git/mirror";
 import { fetchReleases, parseGithubRepo } from "../git/releases";
 import { readDiff, writeDiff } from "../git/storage";
-import type { Harness, SyncTrigger } from "../types";
+import type { Harness, SyncRun, SyncTrigger } from "../types";
 import { addDays, toDay } from "../utils/time";
 
 export interface SyncOptions {
@@ -63,13 +65,54 @@ const LOG_PAGE_SIZE = 2000;
 const MAX_LOG_PAGES = 10;
 
 // Run ids currently executing in this process. A "running" row that is not in
-// this set was left behind by a previous process (crash/restart) and can be
-// safely failed, even when the scheduler is disabled.
+// this set may have been left behind by a previous process (crash/restart), so
+// it can be reclaimed once its heartbeat goes stale.
 const activeRuns = new Set<number>();
-// A fresh "running" row may belong to another in-flight caller (e.g. the
-// already-running test or a second process), so only reclaim clearly stale
-// orphans left by an exited process.
+// A run is only reclaimed after this long without a heartbeat, which keeps a
+// genuinely long (but alive) sync from being mistaken for an orphan.
 const ORPHAN_GRACE_MS = 5 * 60_000;
+// How often a running sync refreshes its heartbeat while it works.
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
+export interface BeginSyncResult {
+  status: "started" | "already-running";
+  harness: Harness;
+  /** The newly created run, or the existing run when one is already active. */
+  run: SyncRun | null;
+}
+
+function heartbeatAgeMs(run: SyncRun): number {
+  const lastSeen = Date.parse(run.heartbeatAt ?? run.startedAt);
+  return Number.isFinite(lastSeen) ? Date.now() - lastSeen : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Reserves a sync run for a harness without doing any I/O work yet. Callers can
+ * return the run id to the client immediately and then execute `runSyncRun`.
+ */
+export function beginSyncRun(
+  db: Db = getDb(),
+  harnessId: number,
+  trigger: SyncTrigger,
+): BeginSyncResult {
+  const harness = getHarnessById(db, harnessId);
+  if (!harness) throw new Error(`Harness not found: ${harnessId}`);
+
+  const orphan = getRunningSyncRun(db, harnessId);
+  if (orphan && !activeRuns.has(orphan.id) && heartbeatAgeMs(orphan) > ORPHAN_GRACE_MS) {
+    finishSyncRun(db, orphan.id, "failed", {
+      error: "Aborted: the previous sync process exited",
+    });
+  }
+
+  const run = startSyncRun(db, harnessId, trigger);
+  if (!run) {
+    return { status: "already-running", harness, run: getRunningSyncRun(db, harnessId) };
+  }
+
+  activeRuns.add(run.id);
+  return { status: "started", harness, run };
+}
 
 /**
  * Reads the commit range newest-first in pages until the backfill cutoff (in
@@ -147,19 +190,8 @@ export async function syncHarness(
   harnessId: number,
   options: SyncOptions = {},
 ): Promise<SyncReport> {
-  const harness = getHarnessById(db, harnessId);
-  if (!harness) throw new Error(`Harness not found: ${harnessId}`);
-
-  const trigger = options.trigger ?? "manual";
-  const orphan = getRunningSyncRun(db, harnessId);
-  const orphanAge = orphan ? Date.now() - Date.parse(orphan.startedAt) : 0;
-  if (orphan && !activeRuns.has(orphan.id) && orphanAge > ORPHAN_GRACE_MS) {
-    finishSyncRun(db, orphan.id, "failed", {
-      error: "Aborted: the previous sync process exited",
-    });
-  }
-  const run = startSyncRun(db, harnessId, trigger);
-  if (!run) {
+  const begin = beginSyncRun(db, harnessId, options.trigger ?? "manual");
+  if (begin.status === "already-running" || !begin.run) {
     return {
       status: "already-running",
       harnessId,
@@ -170,11 +202,54 @@ export async function syncHarness(
       aiUsed: 0,
     };
   }
+  return runSyncRun(db, begin.harness, begin.run, options);
+}
+
+/**
+ * Executes a run reserved by `beginSyncRun`. Splitting reservation from work
+ * lets the HTTP layer hand the run id to the client before slow I/O starts.
+ */
+export async function runSyncRun(
+  db: Db,
+  harness: Harness,
+  run: SyncRun,
+  options: SyncOptions = {},
+): Promise<SyncReport> {
+  const harnessId = harness.id;
+
+  // A queued row can be reclaimed by another process while it waits its turn.
+  const current = getSyncRun(db, run.id);
+  if (current?.status !== "running") {
+    activeRuns.delete(run.id);
+    return {
+      status: "failed",
+      harnessId,
+      runId: run.id,
+      newCommits: 0,
+      newReleases: 0,
+      analyzed: 0,
+      aiUsed: 0,
+      error: "Aborted: the sync run is no longer active",
+    };
+  }
+
   activeRuns.add(run.id);
+  const heartbeat = setInterval(() => {
+    try {
+      touchSyncRun(db, run.id);
+    } catch (error) {
+      console.warn(
+        `[zodiac] heartbeat failed for run ${run.id}:`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  heartbeat.unref?.();
 
   try {
-    // Mark the attempt immediately so the scheduler won't retrigger every tick
-    // while a sync is running or after a failure.
+    // Record the attempt when work actually starts so "last attempt" is not
+    // stamped for runs that are still queued, and the scheduler won't
+    // retrigger while this one is active.
     recordSyncStart(db, harnessId);
     updateSyncRunPhase(db, run.id, "fetch");
     const mirror = await ensureMirror({
@@ -341,6 +416,7 @@ export async function syncHarness(
       error: message,
     };
   } finally {
+    clearInterval(heartbeat);
     activeRuns.delete(run.id);
   }
 }

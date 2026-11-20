@@ -255,6 +255,8 @@ function HarnessCard({
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
+  // Runs are newest-first, so the first running row is the active attempt.
+  const runningRun = runs.find((run) => run.status === "running");
 
   const save = async () => {
     setSaving(true);
@@ -306,9 +308,15 @@ function HarnessCard({
               {SCHEDULE_LABELS[harness.scheduleMode]}
               {harness.scheduleMode === "daily" ? ` ${harness.dailyTime}` : ""}
             </span>
+            {runningRun ? (
+              <span className="chip border-warning/40 text-warning">
+                {runningRun.phase === "queued" ? "排队中" : "同步中"}
+              </span>
+            ) : null}
           </div>
           <p className="mt-1 break-all font-mono text-[11px] text-muted">{harness.repoUrl}</p>
           <p className="mt-1 text-[11px] text-muted">
+            {runningRun ? <span className="text-warning">同步中… · </span> : null}
             上次同步{" "}
             {harness.lastSyncAt ? new Date(harness.lastSyncAt).toLocaleString("zh-CN") : "从未"}
             {" · "}
@@ -324,7 +332,12 @@ function HarnessCard({
           ) : null}
         </div>
         <div className="flex items-center gap-2">
-          <SyncButton harnessId={harness.id} compact label="同步" />
+          <SyncButton
+            harnessId={harness.id}
+            compact
+            label="同步"
+            initialRunIds={runningRun ? [runningRun.id] : undefined}
+          />
           <button type="button" className="btn px-2 py-1 text-[11px]" onClick={toggleEnabled}>
             {harness.enabled ? "停用" : "启用"}
           </button>

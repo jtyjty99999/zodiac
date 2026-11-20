@@ -220,4 +220,23 @@ export const MIGRATIONS: Migration[] = [
     name: "initial_schema",
     sql: INITIAL_SCHEMA,
   },
+  {
+    version: 2,
+    name: "sync_attempt_and_heartbeat",
+    // last_sync_at used to be written when an attempt *started*, which made a
+    // running sync look finished. Split it into last_attempt_at (start) and
+    // last_sync_at (finished), and backfill from the sync_runs history.
+    sql: `
+ALTER TABLE harnesses ADD COLUMN last_attempt_at TEXT;
+ALTER TABLE sync_runs ADD COLUMN heartbeat_at TEXT;
+
+UPDATE harnesses SET last_attempt_at = last_sync_at WHERE last_sync_at IS NOT NULL;
+UPDATE harnesses SET last_sync_at = (
+  SELECT MAX(finished_at) FROM sync_runs
+  WHERE sync_runs.harness_id = harnesses.id AND finished_at IS NOT NULL
+);
+
+UPDATE sync_runs SET heartbeat_at = COALESCE(finished_at, started_at);
+`,
+  },
 ];

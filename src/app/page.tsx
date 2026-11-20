@@ -23,7 +23,7 @@ import {
 } from "@/lib/db/repositories/commits";
 import { listHarnesses } from "@/lib/db/repositories/harnesses";
 import { listReleases } from "@/lib/db/repositories/releases";
-import { listSyncRuns } from "@/lib/db/repositories/syncRuns";
+import { listRunningSyncRuns, listSyncRuns } from "@/lib/db/repositories/syncRuns";
 import { addDays, dateRange, toDay } from "@/lib/utils/time";
 
 export const metadata = { title: "概览" };
@@ -59,6 +59,10 @@ export default function OverviewPage() {
   const recentCommits = latestCommits(db, 8);
   const releases = listReleases(db, undefined, 6);
   const recentRuns = listSyncRuns(db, undefined, 6);
+  // Server-rendered running state: survives a refresh and lets the buttons
+  // resume polling the exact runs instead of guessing from React state.
+  const runningRuns = listRunningSyncRuns(db);
+  const runningRunByHarness = new Map(runningRuns.map((run) => [run.harnessId, run]));
 
   return (
     <div>
@@ -72,7 +76,7 @@ export default function OverviewPage() {
                 基线 {baseline.version}
               </Link>
             ) : null}
-            <SyncButton all />
+            <SyncButton all initialRunIds={runningRuns.map((run) => run.id)} />
           </>
         }
       />
@@ -113,6 +117,7 @@ export default function OverviewPage() {
           {harnesses.map((harness) => {
             const week = countCommitsSince(db, harness.id, weekStart);
             const total = countAllCommits(db, harness.id);
+            const runningRun = runningRunByHarness.get(harness.id);
             return (
               <section key={harness.id} className="card p-4">
                 <div className="flex items-start justify-between gap-3">
@@ -121,12 +126,22 @@ export default function OverviewPage() {
                       <h2 className="text-sm font-semibold">{harness.name}</h2>
                       <span className="chip font-mono">{harness.slug}</span>
                       {!harness.enabled ? <span className="chip">已停用</span> : null}
+                      {runningRun ? (
+                        <span className="chip border-warning/40 text-warning">
+                          {runningRun.phase === "queued" ? "排队中" : "同步中"}
+                        </span>
+                      ) : null}
                     </div>
                     <p className="mt-1 truncate font-mono text-[11px] text-muted">
                       {harness.repoUrl}
                     </p>
                   </div>
-                  <SyncButton harnessId={harness.id} compact label="跟进" />
+                  <SyncButton
+                    harnessId={harness.id}
+                    compact
+                    label="跟进"
+                    initialRunIds={runningRun ? [runningRun.id] : undefined}
+                  />
                 </div>
 
                 <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
@@ -139,9 +154,15 @@ export default function OverviewPage() {
                     <div className="mt-0.5 font-semibold tabular-nums">{total}</div>
                   </div>
                   <div>
-                    <div className="text-[10px] uppercase tracking-wider text-muted">最后同步</div>
+                    <div className="text-[10px] uppercase tracking-wider text-muted">
+                      {runningRun ? "本次同步" : "最后同步"}
+                    </div>
                     <div className="mt-0.5">
-                      <RelativeTime iso={harness.lastSyncAt} />
+                      {runningRun ? (
+                        <span className="text-[11px] text-warning">进行中…</span>
+                      ) : (
+                        <RelativeTime iso={harness.lastSyncAt} />
+                      )}
                     </div>
                   </div>
                 </div>

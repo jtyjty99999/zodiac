@@ -15,6 +15,7 @@ interface HarnessRow {
   daily_time: string;
   backfill_days: number;
   baseline_sha: string | null;
+  last_attempt_at: string | null;
   last_sync_at: string | null;
   last_success_at: string | null;
   last_sha: string | null;
@@ -37,6 +38,7 @@ export function mapHarness(row: HarnessRow): Harness {
     dailyTime: row.daily_time,
     backfillDays: row.backfill_days,
     baselineSha: row.baseline_sha,
+    lastAttemptAt: row.last_attempt_at,
     lastSyncAt: row.last_sync_at,
     lastSuccessAt: row.last_success_at,
     lastSha: row.last_sha,
@@ -161,14 +163,10 @@ export function deleteHarness(db: Db = getDb(), id: number): boolean {
   return result.changes > 0;
 }
 
-export function recordSyncStart(
-  db: Db = getDb(),
-  id: number,
-  options: { lastSyncAt?: string } = {},
-): void {
-  const timestamp = options.lastSyncAt ?? nowIso();
+export function recordSyncStart(db: Db = getDb(), id: number, options: { at?: string } = {}): void {
+  const timestamp = options.at ?? nowIso();
   db.prepare(
-    "UPDATE harnesses SET last_sync_at = ?, last_error = NULL, updated_at = ? WHERE id = ?",
+    "UPDATE harnesses SET last_attempt_at = ?, last_error = NULL, updated_at = ? WHERE id = ?",
   ).run(timestamp, timestamp, id);
 }
 
@@ -179,16 +177,19 @@ export function recordSyncSuccess(
 ): void {
   const timestamp = options.at ?? nowIso();
   db.prepare(
-    `UPDATE harnesses SET last_success_at = ?, last_sha = COALESCE(?, last_sha),
+    `UPDATE harnesses SET last_success_at = ?, last_sync_at = ?, last_sha = COALESCE(?, last_sha),
        last_error = NULL, updated_at = ? WHERE id = ?`,
-  ).run(timestamp, options.lastSha ?? null, timestamp, id);
+  ).run(timestamp, timestamp, options.lastSha ?? null, timestamp, id);
 }
 
-export function recordSyncFailure(db: Db = getDb(), id: number, error: string): void {
-  const timestamp = nowIso();
-  db.prepare("UPDATE harnesses SET last_error = ?, updated_at = ? WHERE id = ?").run(
-    error.slice(0, 1000),
-    timestamp,
-    id,
-  );
+export function recordSyncFailure(
+  db: Db = getDb(),
+  id: number,
+  error: string,
+  options: { at?: string } = {},
+): void {
+  const timestamp = options.at ?? nowIso();
+  db.prepare(
+    "UPDATE harnesses SET last_error = ?, last_sync_at = ?, updated_at = ? WHERE id = ?",
+  ).run(error.slice(0, 1000), timestamp, timestamp, id);
 }

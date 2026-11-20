@@ -44,6 +44,9 @@ export interface Harness {
   dailyTime: string;
   backfillDays: number;
   baselineSha: string | null;
+  /** When the most recent sync attempt started (set even while it is running). */
+  lastAttemptAt: string | null;
+  /** When the most recent attempt finished, regardless of success/failure. */
   lastSyncAt: string | null;
   lastSuccessAt: string | null;
   lastSha: string | null;
@@ -63,6 +66,8 @@ export interface SyncRun {
   error: string | null;
   startedAt: string;
   finishedAt: string | null;
+  /** Last liveness signal; used to detect runs orphaned by an exited process. */
+  heartbeatAt: string | null;
 }
 
 export interface Release {

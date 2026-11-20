@@ -16,6 +16,7 @@ function harness(overrides: Partial<Harness> = {}): Harness {
     dailyTime: "09:00",
     backfillDays: 30,
     baselineSha: null,
+    lastAttemptAt: null,
     lastSyncAt: null,
     lastSuccessAt: null,
     lastSha: null,
@@ -91,6 +92,22 @@ describe("isHarnessDue", () => {
   test("invalid lastSync timestamps are treated as never synced", () => {
     const now = new Date("2026-11-19T12:00:00.000Z");
     expect(isHarnessDue(harness({ lastSyncAt: "garbage" }), now)).toBe(true);
+  });
+
+  test("the last attempt takes precedence over the last completion", () => {
+    // A run started 10 minutes ago is still working; its earlier success must
+    // not make the harness due again mid-run.
+    const now = new Date("2026-11-19T12:00:00.000Z");
+    expect(
+      isHarnessDue(
+        harness({
+          scheduleMode: "hourly",
+          lastAttemptAt: "2026-11-19T11:50:00.000Z",
+          lastSyncAt: "2026-11-19T10:00:00.000Z",
+        }),
+        now,
+      ),
+    ).toBe(false);
   });
 
   test("unknown schedule modes are not due", () => {

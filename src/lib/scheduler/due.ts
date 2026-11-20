@@ -46,7 +46,13 @@ export function zonedTimeToUtc(day: string, time: string, timeZone: string): Dat
 export function isHarnessDue(harness: Harness, now: Date = new Date()): boolean {
   if (!harness.enabled || harness.scheduleMode === "off") return false;
 
-  const lastSync = harness.lastSyncAt ? new Date(harness.lastSyncAt) : null;
+  // Scheduling keys off the last *attempt* (which is stamped when a run starts)
+  // so a long-running sync is not retriggered while it is still working.
+  const lastSync = harness.lastAttemptAt
+    ? new Date(harness.lastAttemptAt)
+    : harness.lastSyncAt
+      ? new Date(harness.lastSyncAt)
+      : null;
 
   if (harness.scheduleMode === "hourly") {
     if (!lastSync || Number.isNaN(lastSync.getTime())) return true;

@@ -17,6 +17,7 @@ function harness(id: number, slug: string, name: string, sortOrder = id): Harnes
     dailyTime: "09:17",
     backfillDays: 30,
     baselineSha: null,
+    lastAttemptAt: null,
     lastSyncAt: null,
     lastSuccessAt: null,
     lastSha: null,

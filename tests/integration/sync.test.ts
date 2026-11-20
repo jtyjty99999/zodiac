@@ -174,8 +174,10 @@ describe("syncHarness", () => {
       repoUrl: repo.url,
     });
     const stale = startSyncRun(db, harness.id, "manual")!;
-    db.prepare("UPDATE sync_runs SET started_at = ? WHERE id = ?").run(
-      new Date(Date.now() - 10 * 60_000).toISOString(),
+    const staleAt = new Date(Date.now() - 10 * 60_000).toISOString();
+    db.prepare("UPDATE sync_runs SET started_at = ?, heartbeat_at = ? WHERE id = ?").run(
+      staleAt,
+      staleAt,
       stale.id,
     );
 
@@ -186,6 +188,27 @@ describe("syncHarness", () => {
     const reclaimed = runs.find((run) => run.id === stale.id);
     expect(reclaimed?.status).toBe("failed");
     expect(reclaimed?.error).toContain("previous sync process exited");
+  });
+
+  test("keeps a long-running run alive while its heartbeat is fresh", async () => {
+    const repo = createTempRepo([demoCommit]);
+    const db = makeDb();
+    const { harness } = createHarness(db, {
+      slug: "demo",
+      name: "Demo",
+      repoUrl: repo.url,
+    });
+    const run = startSyncRun(db, harness.id, "manual")!;
+    // Old start time, but the heartbeat proves the process is still alive.
+    db.prepare("UPDATE sync_runs SET started_at = ? WHERE id = ?").run(
+      new Date(Date.now() - 10 * 60_000).toISOString(),
+      run.id,
+    );
+
+    const report = await syncHarness(db, harness.id, { analyze: false, allowLocalRepo: true });
+    expect(report.status).toBe("already-running");
+    expect(getRunningSyncRun(db, harness.id)?.id).toBe(run.id);
+    finishSyncRun(db, run.id, "success");
   });
 
   test("throws for unknown harnesses", async () => {
