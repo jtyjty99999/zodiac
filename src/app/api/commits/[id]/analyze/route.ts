@@ -1,5 +1,5 @@
-import { analyzeCommitById } from "@/lib/analysis";
-import { getAiConfig } from "@/lib/analysis/anthropic";
+import { after } from "next/server";
+import { beginCommitAnalysis, isCommitAnalyzing, runCommitAnalysis } from "@/lib/analysis/active";
 import { getDb } from "@/lib/db/client";
 import { getCommitById } from "@/lib/db/repositories/commits";
 import { apiError, apiOk, serverError } from "@/lib/http/responses";
@@ -22,15 +22,37 @@ export async function POST(request: Request, { params }: Params) {
     const commit = getCommitById(db, id);
     if (!commit) return apiError("提交不存在", 404);
 
-    const config = getAiConfig(db);
-    // Automatic engine: API when configured, otherwise the local Claude Code CLI.
-    const outcome = await analyzeCommitById(db, id, {
-      force: true,
-      useAi: true,
-      aiConfig: config,
+    // Idempotent: a second click while the analysis runs just reports progress.
+    if (!beginCommitAnalysis(id)) {
+      return apiOk({ id, status: "running" }, undefined, 202);
+    }
+
+    // after() keeps the background work alive past the 202 response.
+    after(async () => {
+      await runCommitAnalysis(db, id);
     });
-    if (!outcome) return apiError("分析失败", 500);
-    return apiOk(outcome);
+
+    return apiOk({ id, status: "running" }, undefined, 202);
+  } catch (error) {
+    return serverError(error);
+  }
+}
+
+export async function GET(_request: Request, { params }: Params) {
+  const { id: rawId } = await params;
+  const id = parseId(rawId);
+  if (!id) return apiError("无效的提交 ID", 400);
+
+  try {
+    const db = getDb();
+    const commit = getCommitById(db, id);
+    if (!commit) return apiError("提交不存在", 404);
+    return apiOk({
+      id,
+      analyzing: isCommitAnalyzing(id),
+      analyzedBy: commit.analyzedBy,
+      analyzedAt: commit.analyzedAt,
+    });
   } catch (error) {
     return serverError(error);
   }

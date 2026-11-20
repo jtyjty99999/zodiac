@@ -9,11 +9,11 @@ import {
   type AiCommitContext,
   buildUserPrompt,
   COMMIT_REVIEW_SYSTEM_PROMPT,
+  MAX_RATING_REASON_CHARS,
+  MAX_SUMMARY_CHARS,
 } from "./anthropic";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const MAX_RATING_REASON_CHARS = 800;
-const MAX_SUMMARY_CHARS = 4_000;
 const MAX_TAGS = 10;
 const MAX_TAG_CHARS = 40;
 const MAX_ERROR_CHARS = 500;

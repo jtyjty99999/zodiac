@@ -7,6 +7,7 @@ import {
   buildUserPrompt,
   COMMIT_REVIEW_SYSTEM_PROMPT,
   getAiConfig,
+  MAX_DIFF_CHARS,
 } from "@/lib/analysis/anthropic";
 import { openDatabase } from "@/lib/db/client";
 import { migrate } from "@/lib/db/migrate";
@@ -210,10 +211,15 @@ describe("analyzeWithClaude", () => {
 });
 
 describe("commit review prompt", () => {
-  test("asks for review sections and judges importance, not diff size", () => {
+  test("asks for a concise implementation walkthrough and judges importance, not diff size", () => {
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("让同事 1 分钟看懂");
     expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**解决的问题**");
-    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**实现思路**");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**具体改动**");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**实现解读**");
     expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("**影响与风险**");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("300–600 字");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("3–5 步");
+    expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("不要逐行翻译代码");
     expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("不是改动行数");
     expect(COMMIT_REVIEW_SYSTEM_PROMPT).toContain("不可信数据");
   });
@@ -222,8 +228,27 @@ describe("commit review prompt", () => {
     const prompt = buildUserPrompt({ ...context, diff: "diff --git a/x b/x\n+hello\n" });
     expect(prompt).toContain("feat: add MCP stdio transport");
     expect(prompt).toContain("src/mcp.ts (+120/-3)");
+    expect(prompt).toContain("文件变更（共 1 个）");
     expect(prompt).toContain("```diff");
     expect(prompt).toContain("+hello");
+    expect(prompt).not.toContain("已截断");
+  });
+
+  test("marks a truncated diff so the model can state what it could not see", () => {
+    const prompt = buildUserPrompt({ ...context, diff: "+x\n".repeat(MAX_DIFF_CHARS) });
+    expect(prompt).toContain("已截断为前");
+    expect(prompt).toContain("请注明未看到的部分");
+  });
+
+  test("notes files left out of a long file list", () => {
+    const files = Array.from({ length: 70 }, (_, index) => ({
+      path: `src/f${index}.ts`,
+      additions: 1,
+      deletions: 0,
+    }));
+    const prompt = buildUserPrompt({ ...context, files });
+    expect(prompt).toContain("文件变更（共 70 个）");
+    expect(prompt).toContain("另有 10 个文件未列出");
   });
 
   test("says so when no diff was captured", () => {

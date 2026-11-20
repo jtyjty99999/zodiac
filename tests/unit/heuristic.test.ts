@@ -48,7 +48,7 @@ describe("guessModuleKey", () => {
 });
 
 describe("heuristicSummary", () => {
-  test("renders a review with problem, approach and impact sections", () => {
+  test("renders a review with problem, changes, implementation and impact sections", () => {
     const { summaryMd, tags } = heuristicSummary({
       subject: "feat: add MCP transport",
       body: null,
@@ -60,7 +60,8 @@ describe("heuristicSummary", () => {
     expect(tags).toContain("mcp");
     expect(summaryMd).toContain("**解决的问题**");
     expect(summaryMd).toContain("add MCP transport");
-    expect(summaryMd).toContain("**实现思路**");
+    expect(summaryMd).toContain("**具体改动**");
+    expect(summaryMd).toContain("**实现解读**");
     expect(summaryMd).toContain("2 个文件");
     expect(summaryMd).toContain("`src/mcp/client.ts`");
     expect(summaryMd).toContain("涉及领域");

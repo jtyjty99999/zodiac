@@ -127,7 +127,7 @@ describe("analyzeCommitById", () => {
         rating: 4,
         ratingReason: "本地评审：新增 MCP 传输层。",
         summary:
-          "**解决的问题**\n\n需要 MCP。\n\n**实现思路**\n\n新增传输层。\n\n**影响与风险**\n\n新增入口。",
+          "**解决的问题**\n\n需要 MCP。\n\n**具体改动**\n\n`src/client.ts`：新增 `StdioTransport`。\n\n**实现解读**\n\n启动时注册传输层。\n\n**影响与风险**\n\n新增入口。",
         tags: ["mcp"],
         candidate: null,
       }),
@@ -136,7 +136,8 @@ describe("analyzeCommitById", () => {
     expect(outcome?.analyzedBy).toBe("claude-code");
     const stored = getCommitById(db, featureId)!;
     expect(stored.analyzedBy).toBe("claude-code");
-    expect(stored.summaryMd).toContain("**实现思路**");
+    expect(stored.summaryMd).toContain("**具体改动**");
+    expect(stored.summaryMd).toContain("**实现解读**");
     expect(stored.rating).toBe(4);
   });
 

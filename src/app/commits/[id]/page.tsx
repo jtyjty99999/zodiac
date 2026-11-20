@@ -11,6 +11,7 @@ import {
   RelativeTime,
   SectionCard,
 } from "@/components/ui";
+import { isCommitAnalyzing } from "@/lib/analysis/active";
 import { analyzedByLabel } from "@/lib/analysis/labels";
 import { getDb } from "@/lib/db/client";
 import { getCommitById, listCommitFiles } from "@/lib/db/repositories/commits";
@@ -66,7 +67,10 @@ export default async function CommitDetailPage({ params }: { params: Promise<{ i
                 <ExternalLink size={13} /> GitHub
               </a>
             ) : null}
-            <CommitAnalyzeButton commitId={commit.id} />
+            <CommitAnalyzeButton
+              commitId={commit.id}
+              initialAnalyzing={isCommitAnalyzing(commit.id)}
+            />
           </>
         }
       />
@@ -104,7 +108,7 @@ export default async function CommitDetailPage({ params }: { params: Promise<{ i
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="space-y-4">
           {commit.summaryMd || commit.ratingReason ? (
-            <SectionCard title="评审">
+            <SectionCard title="评审与代码解读">
               {commit.summaryMd ? <MarkdownView content={commit.summaryMd} /> : null}
               {commit.ratingReason ? (
                 <p className="mt-3 border-t border-line pt-3 text-xs text-muted">
@@ -114,9 +118,9 @@ export default async function CommitDetailPage({ params }: { params: Promise<{ i
               ) : null}
             </SectionCard>
           ) : (
-            <SectionCard title="评审">
+            <SectionCard title="评审与代码解读">
               <p className="text-xs text-muted">
-                尚未分析。点击右上角「重新分析」生成分类、评级与评审。
+                尚未分析。点击右上角「重新分析」生成分类、评级与代码解读。
               </p>
             </SectionCard>
           )}

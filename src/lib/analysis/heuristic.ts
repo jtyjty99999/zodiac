@@ -154,7 +154,7 @@ function problemSection(input: HeuristicInput, tags: string[]): string {
   }
 }
 
-function approachSection(input: HeuristicInput, tags: string[]): string {
+function changeSection(input: HeuristicInput): string {
   const fileCount = input.files.length;
   const scale =
     fileCount > 0
@@ -165,10 +165,17 @@ function approachSection(input: HeuristicInput, tags: string[]): string {
     .slice(0, 3)
     .map((dir) => `\`${dir}\``)
     .join("、");
-  const lines = [scale + (dirs ? `，主要位于 ${dirs}` : "") + "。"];
-  if (tags.length > 0) lines.push(`涉及领域：${tags.map((tag) => `\`${tag}\``).join("、")}。`);
+  const lines = [`${scale}${dirs ? `，主要位于 ${dirs}` : ""}。`];
   if (paths.length > 0) lines.push(`主要文件：${paths.join("、")}。`);
-  lines.push("未读取 diff，具体实现路径只能从提交信息与文件分布推断。");
+  return lines.join("\n");
+}
+
+function implementationSection(tags: string[]): string {
+  const lines: string[] = [];
+  if (tags.length > 0) lines.push(`涉及领域：${tags.map((tag) => `\`${tag}\``).join("、")}。`);
+  lines.push(
+    "未读取 diff，无法逐文件解读具体实现；在设置中配置 Claude API 或本地 Claude Code 后重新分析，可获得完整的代码解读。",
+  );
   return lines.join("\n");
 }
 
@@ -204,9 +211,13 @@ export function heuristicSummary(input: HeuristicInput): HeuristicAnalysis {
     "",
     problemSection(input, tags),
     "",
-    "**实现思路**",
+    "**具体改动**",
     "",
-    approachSection(input, tags),
+    changeSection(input),
+    "",
+    "**实现解读**",
+    "",
+    implementationSection(tags),
     "",
     "**影响与风险**",
     "",

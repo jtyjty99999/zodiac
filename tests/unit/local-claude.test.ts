@@ -81,7 +81,7 @@ describe("analyzeWithLocalClaude", () => {
 
     expect(result?.rating).toBe(5);
     expect(result?.ratingReason.length).toBe(800);
-    expect(result?.summary.length).toBe(4000);
+    expect(result?.summary.length).toBe(8_000);
     expect(result?.tags).toHaveLength(10);
   });
 
