@@ -2,6 +2,7 @@ import { ArrowLeft, ArrowRight, Sparkles } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import FeatureAuditButton from "@/components/FeatureAuditButton";
+import FeatureDeepDiveToggle from "@/components/FeatureDeepDiveToggle";
 import SupportEditor from "@/components/SupportEditor";
 import { MarkdownView, PageHeader, SupportBadge } from "@/components/ui";
 import { getCompareView } from "@/lib/catalog/matrix";
@@ -65,6 +66,7 @@ export default async function CompareFeaturePage({
             {view.feature.updatedDay ? (
               <span className="chip">更新于 {view.feature.updatedDay}</span>
             ) : null}
+            <FeatureDeepDiveToggle featureId={view.feature.id} deepDive={view.deepDive} />
           </div>
         }
       />

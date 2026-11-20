@@ -397,6 +397,10 @@ export function touchFeature(db: Db = getDb(), featureId: number, day: string): 
   db.prepare("UPDATE features SET updated_day = ? WHERE id = ?").run(day, featureId);
 }
 
+export function setFeatureDeepDive(db: Db = getDb(), featureId: number, deepDive: boolean): void {
+  db.prepare("UPDATE features SET is_deep_dive = ? WHERE id = ?").run(deepDive ? 1 : 0, featureId);
+}
+
 export function updateFeatureContent(
   db: Db = getDb(),
   featureId: number,

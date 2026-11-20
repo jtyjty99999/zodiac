@@ -112,6 +112,10 @@ export const featureSupportSchema = z.object({
   sinceVersion: z.string().max(80).nullable().optional(),
 });
 
+export const featureDeepDiveSchema = z.object({
+  deepDive: z.boolean(),
+});
+
 export const featureKeySchema = z
   .string()
   .trim()

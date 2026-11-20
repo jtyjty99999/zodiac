@@ -20,6 +20,7 @@ import {
   listFeatures,
   listModules,
   listSupport,
+  setFeatureDeepDive,
   type Taxonomy,
   upsertFeatureDetail,
   upsertTaxonomy,
@@ -160,6 +161,22 @@ describe("getCompareView", () => {
     expect(last.next).toBeNull();
 
     expect(getCompareView("nope.none", db)).toBeNull();
+  });
+});
+
+describe("setFeatureDeepDive", () => {
+  test("toggles the deep-dive flag used by the compare view", () => {
+    const { db } = seeded();
+    const feature = getFeatureByKey(db, "context.compaction")!;
+    expect(feature.isDeepDive).toBe(false);
+
+    setFeatureDeepDive(db, feature.id, true);
+    expect(getFeatureByKey(db, "context.compaction")?.isDeepDive).toBe(true);
+    expect(getCompareView("context.compaction", db)?.deepDive).toBe(true);
+    expect(listDeepDiveFeatures(db).map((entry) => entry.key)).toContain("context.compaction");
+
+    setFeatureDeepDive(db, feature.id, false);
+    expect(getCompareView("context.compaction", db)?.deepDive).toBe(false);
   });
 });
 

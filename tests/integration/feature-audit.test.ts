@@ -111,6 +111,7 @@ describe("runFeatureAudit", () => {
     const updated = getFeatureByKey(db, "context.compaction")!;
     expect(updated.overviewMd).toContain("Codex 的实现更完整");
     expect(updated.diffSummaryMd).toContain("摘要 + 截断");
+    expect(updated.isDeepDive).toBe(true);
 
     const support = listSupport(db, [feature.id]);
     const codex = support.find((entry) => entry.harnessId === codexId)!;
@@ -148,6 +149,7 @@ describe("runFeatureAudit", () => {
     expect(stored.error).toContain("CLI 不可用");
     expect(stored.version).toBeNull();
     expect(getFeatureByKey(db, "context.compaction")?.overviewMd).toBeNull();
+    expect(getFeatureByKey(db, "context.compaction")?.isDeepDive).toBe(false);
     expect(listSupport(db, [feature.id]).find((entry) => entry.harnessId === codexId)?.status).toBe(
       "no",
     );

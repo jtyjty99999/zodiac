@@ -9,7 +9,7 @@
 ## 功能
 
 - **功能矩阵**：13 个模块、85 个功能点，按 ✓ / ◐ / ✗ / ? 标注各 harness 的支持状态，支持搜索、模块筛选与「仅看差异」。
-- **实现细节对比**：12 个核心功能（主循环、文件编辑、沙箱、系统提示、压缩、记忆、会话持久化、Provider、TUI、插件、MCP stdio、子智能体）逐项对比实现方式，附源码证据路径、横向差异总结与更新时间线。对比页支持**按功能点 AI 重审**：模型读取各 harness 的代码快照，重新判断支持状态、整理实现细节与横向差异，直接写入功能矩阵并生成可回滚的基线版本；引擎优先 Anthropic API，回退本地 Claude Code CLI，证据中的 `path:line` 会回到镜像逐一验证。
+- **实现细节对比**：12 个核心功能（主循环、文件编辑、沙箱、系统提示、压缩、记忆、会话持久化、Provider、TUI、插件、MCP stdio、子智能体）逐项对比实现方式，附源码证据路径、横向差异总结与更新时间线。对比页支持**按功能点 AI 重审**：模型读取各 harness 的代码快照，重新判断支持状态、整理实现细节与横向差异，直接写入功能矩阵并生成可回滚的基线版本；引擎优先 Anthropic API，回退本地 Claude Code CLI，证据中的 `path:line` 会回到镜像逐一验证。重审成功的功能点会自动加入深挖集合，也可在对比页手动「设为深挖 / 取消深挖」。
 - **提交与发版跟踪**：bare git mirror 抓取提交，GitHub Releases API（失败回退 tags）；手动「立即跟进」或按 harness 配置每小时/每天自动同步。
 - **自动分析**：启发式分类（feature / performance / bugfix / refactor / docs / test / tooling / other）、1–5 星评级、代码解读式中文评审（解决的问题 / 具体改动 / 实现解读 / 影响与风险，通常 300–600 字，聚焦实现思路、步骤与关键函数）与功能标签；分析引擎自动选择：优先 Anthropic API，未配置或失败时回退本地 Claude Code CLI，再失败回退启发式。评级依据功能重要性、影响面与风险，不按改动行数加分。
 - **按天归档**：每个 harness 每天聚合提交、分类统计、发版记录与重点点评。
@@ -114,7 +114,7 @@ pnpm reanalyze --harness codex      # 只重算某个 harness
 ```bash
 pnpm lint        # Biome（格式 + 规则）
 pnpm typecheck
-pnpm test        # Vitest，322 个用例，src/lib 覆盖率门槛 80%
+pnpm test        # Vitest，327 个用例，src/lib 覆盖率门槛 80%
 pnpm e2e         # Playwright，首次运行前执行 pnpm exec playwright install chromium
 ```
 

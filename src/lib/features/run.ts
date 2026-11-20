@@ -6,6 +6,7 @@ import {
   getFeatureByKey,
   listSupport,
   recordFeatureHistory,
+  setFeatureDeepDive,
   setFeatureSupport,
   touchFeature,
   updateFeatureContent,
@@ -108,6 +109,9 @@ export function applyFeatureAudit(
       updatedDay: day,
     });
     touchFeature(db, feature.id, day);
+    // An audited feature now has implementation-level content, so it joins the
+    // deep-dive set (the compare page can still toggle it off manually).
+    setFeatureDeepDive(db, feature.id, true);
 
     for (const entry of outcome.result.harnesses) {
       const harness = harnessBySlug.get(entry.slug);
