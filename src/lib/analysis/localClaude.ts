@@ -1,7 +1,7 @@
 import os from "node:os";
 import { z } from "zod";
-import { parseClaudeOutput, runClaudeCommand } from "../claude/cli";
-import { isValidClaudeCommand } from "../explore/engineSettings";
+import type { LocalEngineKind } from "../explore/engineSettings";
+import { runLocalEngine } from "../localEngine";
 import { COMMIT_CATEGORIES, type CommitCategory } from "../types";
 import {
   AI_RESULT_JSON_SCHEMA,
@@ -22,6 +22,10 @@ export interface LocalClaudeOptions {
   /** Command name or absolute path from settings; executed without a shell. */
   command: string;
   timeoutMs?: number;
+}
+
+export interface LocalEngineAnalyzeOptions extends LocalClaudeOptions {
+  engine: LocalEngineKind;
 }
 
 const reviewSchema = z.object({
@@ -67,46 +71,36 @@ export function normalizeReview(value: unknown): unknown {
 }
 
 /**
- * Runs one headless local Claude Code call to review a commit. Read-only and
- * sandboxed: no tools, no project settings, no MCP, no persistence.
+ * Runs one headless local-engine call to review a commit. Claude Code is
+ * sandboxed to no tools; Codex runs with a read-only sandbox; DeepSeek Harness
+ * runs its headless profile in a temporary working directory.
  */
-export async function analyzeWithLocalClaude(
+export async function analyzeWithLocalEngine(
   context: AiCommitContext,
-  options: LocalClaudeOptions,
+  options: LocalEngineAnalyzeOptions,
 ): Promise<AiAnalysis | null> {
-  if (!isValidClaudeCommand(options.command)) return null;
-
-  const args = [
-    "-p",
-    buildUserPrompt(context),
-    "--output-format",
-    "json",
-    "--restricted",
-    "--safe-mode",
-    "--strict-mcp-config",
-    "--disable-slash-commands",
-    "--tools",
-    "",
-    "--permission-prompts",
-    "none",
-    "--no-session-persistence",
-    "--append-system-prompt",
-    COMMIT_REVIEW_SYSTEM_PROMPT,
-    "--json-schema",
-    JSON.stringify(AI_RESULT_JSON_SCHEMA),
-  ];
-
   try {
-    const { stdout } = await runClaudeCommand(options.command.trim(), args, {
+    const parsed = await runLocalEngine(options.engine, options.command, {
+      prompt: buildUserPrompt(context),
+      systemPrompt: COMMIT_REVIEW_SYSTEM_PROMPT,
       cwd: os.tmpdir(),
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      jsonSchema: AI_RESULT_JSON_SCHEMA,
     });
-    return reviewSchema.parse(normalizeReview(parseClaudeOutput(stdout)));
+    return reviewSchema.parse(normalizeReview(parsed));
   } catch (error) {
     console.warn(
-      "local Claude Code commit review failed:",
+      `local ${options.engine} commit review failed:`,
       (error instanceof Error ? error.message : String(error)).slice(0, MAX_ERROR_CHARS),
     );
     return null;
   }
+}
+
+/** Backwards-compatible Claude Code entry used by older tests. */
+export function analyzeWithLocalClaude(
+  context: AiCommitContext,
+  options: LocalClaudeOptions,
+): Promise<AiAnalysis | null> {
+  return analyzeWithLocalEngine(context, { ...options, engine: "claude-code" });
 }

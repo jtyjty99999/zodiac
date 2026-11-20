@@ -22,6 +22,8 @@ const ENGINE_LABELS: Record<ExplorationEngine, string> = {
   "heuristic+claude": "启发式 + Claude 综合",
   claude: "Claude 自主探索",
   "claude-code": "本地 Claude Code 探索",
+  codex: "本地 Codex 探索",
+  deepseek: "本地 DeepSeek Harness 探索",
 };
 
 const EVIDENCE_STATUS_LABELS: Record<ExplorationHarnessEvidence["status"], string> = {

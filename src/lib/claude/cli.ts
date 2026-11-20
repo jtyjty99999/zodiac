@@ -3,27 +3,33 @@ import { extractJson } from "../analysis/claudeJson";
 
 const DEFAULT_MAX_OUTPUT_BYTES = 10 * 1024 * 1024;
 
-export interface ClaudeCommandOptions {
+export interface LocalCommandOptions {
   cwd?: string;
   timeoutMs: number;
   maxBytes?: number;
+  /** When provided, written to the child's stdin before it is closed. */
+  stdin?: string;
 }
 
-export interface ClaudeCommandResult {
+export type ClaudeCommandOptions = Omit<LocalCommandOptions, "stdin">;
+
+export interface LocalCommandResult {
   stdout: string;
   stderr: string;
 }
 
+export type ClaudeCommandResult = LocalCommandResult;
+
 /**
- * Runs a local `claude` CLI invocation without a shell. Rejects with a bounded
- * message: `execFile` echoes the full argv in `error.message`, which would leak
- * the (potentially large, untrusted) prompt into logs.
+ * Runs a local CLI invocation without a shell. Rejects with a bounded message:
+ * `execFile` echoes the full argv in `error.message`, which would leak the
+ * (potentially large, untrusted) prompt into logs.
  */
-export function runClaudeCommand(
+export function runLocalCommand(
   command: string,
   args: string[],
-  options: ClaudeCommandOptions,
-): Promise<ClaudeCommandResult> {
+  options: LocalCommandOptions,
+): Promise<LocalCommandResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       command,
@@ -49,10 +55,20 @@ export function runClaudeCommand(
         resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
       },
     );
-    // Headless runs pass the prompt as an argument; leaving stdin open makes
-    // Claude Code wait for piped input and emit a "no stdin data" warning.
-    child.stdin?.end();
+    // Leaving stdin open makes headless CLIs wait for piped input and emit a
+    // "no stdin data" warning, so always close it after optionally writing.
+    if (options.stdin !== undefined) child.stdin?.end(options.stdin);
+    else child.stdin?.end();
   });
+}
+
+/** Backwards-compatible wrapper for Claude Code call sites. */
+export function runClaudeCommand(
+  command: string,
+  args: string[],
+  options: ClaudeCommandOptions,
+): Promise<LocalCommandResult> {
+  return runLocalCommand(command, args, options);
 }
 
 /** Extracts the JSON payload from `claude -p --output-format json` output. */

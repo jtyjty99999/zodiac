@@ -171,8 +171,10 @@ describe("misc schemas", () => {
     expect(settingsSchema.safeParse({}).success).toBe(false);
   });
 
-  test("settingsSchema validates the exploration engine and CLI command", () => {
+  test("settingsSchema validates the exploration engine and CLI commands", () => {
     expect(settingsSchema.safeParse({ exploreEngine: "claude-code" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ exploreEngine: "codex" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ exploreEngine: "deepseek" }).success).toBe(true);
     expect(settingsSchema.safeParse({ exploreEngine: "api" }).success).toBe(true);
     expect(settingsSchema.safeParse({ exploreEngine: "local" }).success).toBe(false);
     expect(settingsSchema.safeParse({ claudeCodeCommand: "/usr/local/bin/claude" }).success).toBe(
@@ -180,5 +182,9 @@ describe("misc schemas", () => {
     );
     expect(settingsSchema.safeParse({ claudeCodeCommand: "   " }).success).toBe(false);
     expect(settingsSchema.safeParse({ claudeCodeCommand: "claude\nrm -rf /" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ codexCommand: "/opt/bin/codex" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ codexCommand: "" }).success).toBe(false);
+    expect(settingsSchema.safeParse({ deepseekCommand: "dsh" }).success).toBe(true);
+    expect(settingsSchema.safeParse({ deepseekCommand: "dsh\u0000" }).success).toBe(false);
   });
 });

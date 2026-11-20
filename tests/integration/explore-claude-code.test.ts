@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import { createHarness } from "@/lib/db/repositories/harnesses";
 import { exploreWithClaudeCode, getClaudeCodeStatus } from "@/lib/explore/claudeCode";
 import { ensureMirror, mirrorPath } from "@/lib/git/mirror";
@@ -51,6 +51,16 @@ function input(harness: Awaited<ReturnType<typeof setupMirror>>["harness"]) {
     harnesses: [harness],
   };
 }
+
+// The global test setup disables local engines; these tests drive fake CLI
+// executables, so they re-enable the Claude Code engine for this file.
+beforeAll(() => {
+  delete process.env.ZODIAC_LOCAL_CLAUDE;
+});
+
+afterAll(() => {
+  process.env.ZODIAC_LOCAL_CLAUDE = "off";
+});
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -202,7 +212,7 @@ fs.writeFileSync(${JSON.stringify(argsFile)}, JSON.stringify(process.argv.slice(
 
     expect(result).toBeNull();
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("local Claude Code exploration failed"),
+      expect.stringContaining("local claude-code exploration failed"),
       expect.any(String),
     );
     expect(worktreeList(slug)).not.toContain(path.join(os.tmpdir(), "zodiac-explore-"));

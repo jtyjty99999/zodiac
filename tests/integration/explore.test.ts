@@ -308,7 +308,12 @@ describe("runExploration", () => {
 
     await runExploration(db, exploration.id, {
       config: { enabled: false, hasKey: false, model: "test-model", maxPerSync: 0 },
-      engineSettings: { engine: "claude-code", command: "/opt/bin/claude" },
+      engineSettings: {
+        engine: "claude-code",
+        command: "/opt/bin/claude",
+        codexCommand: "codex",
+        deepseekCommand: "dsh",
+      },
       explore,
       exploreCode,
       synth,
@@ -321,6 +326,7 @@ describe("runExploration", () => {
     expect(stored?.reportMd).toContain("本地 Claude Code 探索");
     expect(stored?.reportMd).toContain("本地 CLI 结论");
     expect(exploreCode).toHaveBeenCalledWith(db, expect.anything(), {
+      engine: "claude-code",
       command: "/opt/bin/claude",
     });
     // The local engine runs even without an API key and replaces the API loop.
@@ -361,7 +367,12 @@ describe("runExploration", () => {
 
     await runExploration(db, exploration.id, {
       config: { enabled: false, hasKey: false, model: "test-model", maxPerSync: 0 },
-      engineSettings: { engine: "claude-code", command: "claude" },
+      engineSettings: {
+        engine: "claude-code",
+        command: "claude",
+        codexCommand: "codex",
+        deepseekCommand: "dsh",
+      },
       explore,
       exploreCode,
       synth,

@@ -1,3 +1,4 @@
+import { LOCAL_ENGINE_LABELS } from "../explore/engineSettings";
 import type { FeatureAuditEngine, FeatureAuditStatus } from "../types";
 
 export function featureAuditStatusLabel(value: FeatureAuditStatus): string {
@@ -7,5 +8,5 @@ export function featureAuditStatusLabel(value: FeatureAuditStatus): string {
 }
 
 export function featureAuditEngineLabel(value: FeatureAuditEngine): string {
-  return value === "claude" ? "Claude API" : "本地 Claude Code";
+  return value === "claude" ? "Claude API" : LOCAL_ENGINE_LABELS[value];
 }

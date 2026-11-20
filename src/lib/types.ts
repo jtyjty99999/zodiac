@@ -190,7 +190,7 @@ export interface CatalogVersion {
 }
 
 export type FeatureAuditStatus = "running" | "success" | "failed";
-export type FeatureAuditEngine = "claude" | "claude-code";
+export type FeatureAuditEngine = "claude" | "claude-code" | "codex" | "deepseek";
 
 export interface FeatureAudit {
   id: number;
@@ -246,7 +246,13 @@ export interface HarnessStats {
 
 export type ExplorationStatus = "running" | "success" | "failed";
 export type ExplorationPhase = "search" | "explore" | "synthesize" | "done";
-export type ExplorationEngine = "heuristic" | "heuristic+claude" | "claude" | "claude-code";
+export type ExplorationEngine =
+  | "heuristic"
+  | "heuristic+claude"
+  | "claude"
+  | "claude-code"
+  | "codex"
+  | "deepseek";
 export type ExplorationHarnessStatus = "ok" | "empty" | "missing" | "error";
 
 export interface ExplorationMatchedFeature {

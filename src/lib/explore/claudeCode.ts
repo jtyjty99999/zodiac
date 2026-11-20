@@ -1,7 +1,5 @@
 import path from "node:path";
 import { z } from "zod";
-import type { ClaudeCommandOptions } from "../claude/cli";
-import { parseClaudeOutput, runClaudeCommand } from "../claude/cli";
 import type { Db } from "../db/client";
 import { isSafeRepoPath, isValidSearchPattern, readBlob } from "../git/search";
 import {
@@ -10,11 +8,18 @@ import {
   removeSnapshot,
   removeSnapshotRoot,
 } from "../git/snapshot";
+import { getLocalEngineStatus, runLocalEngine } from "../localEngine";
 import type { ExplorationEvidence, ExplorationHarnessEvidence } from "../types";
 import { cleanErrorMessage } from "../utils/errors";
 import { nowIso } from "../utils/time";
 import type { AgenticExplorationInput, AgenticExplorationResult } from "./agent";
-import { CLAUDE_CODE_DEFAULT_COMMAND, isValidClaudeCommand } from "./engineSettings";
+import {
+  isLocalEngineEnabled,
+  isValidLocalCommand,
+  LOCAL_ENGINE_DEFAULT_COMMANDS,
+  LOCAL_ENGINE_LABELS,
+  type LocalEngineKind,
+} from "./engineSettings";
 import {
   baseEntry,
   type HarnessSource,
@@ -184,6 +189,12 @@ export interface ClaudeCodeStatus {
   command: string;
 }
 
+export interface LocalEngineExplorationOptions {
+  engine: LocalEngineKind;
+  command?: string;
+  timeoutMs?: number;
+}
+
 export interface ClaudeCodeExplorationOptions {
   command?: string;
   timeoutMs?: number;
@@ -191,48 +202,28 @@ export interface ClaudeCodeExplorationOptions {
 
 /** Checks whether a local `claude` command is runnable and returns its version. */
 export async function getClaudeCodeStatus(
-  command: string = CLAUDE_CODE_DEFAULT_COMMAND,
+  command: string = LOCAL_ENGINE_DEFAULT_COMMANDS["claude-code"],
   timeoutMs: number = VERSION_TIMEOUT_MS,
 ): Promise<ClaudeCodeStatus> {
-  if (!isValidClaudeCommand(command)) {
-    return { available: false, version: null, command };
-  }
-  try {
-    const { stdout } = await runClaudeCommand(command.trim(), ["--version"], {
-      timeoutMs,
-      maxBytes: 64 * 1024,
-    });
-    const version = stdout.trim().split("\n").find(Boolean)?.slice(0, 120) ?? null;
-    return { available: true, version, command };
-  } catch {
-    return { available: false, version: null, command };
-  }
+  const status = await getLocalEngineStatus("claude-code", command, timeoutMs);
+  return { available: status.available, version: status.version, command };
 }
 
-async function runClaudeCode(prompt: string, options: ClaudeCommandOptions & { command: string }) {
-  const args = [
-    "-p",
+async function runLocalExploration(
+  engine: LocalEngineKind,
+  command: string,
+  prompt: string,
+  options: { cwd: string; timeoutMs: number },
+) {
+  const parsed = await runLocalEngine(engine, command, {
     prompt,
-    "--output-format",
-    "json",
-    "--restricted",
-    "--safe-mode",
-    "--strict-mcp-config",
-    "--disable-slash-commands",
-    "--tools",
-    ALLOWED_TOOLS,
-    "--allowedTools",
-    ALLOWED_TOOLS,
-    "--permission-prompts",
-    "none",
-    "--no-session-persistence",
-    "--append-system-prompt",
-    SYSTEM_PROMPT,
-    "--json-schema",
-    JSON.stringify(RESULT_JSON_SCHEMA),
-  ];
-  const { stdout } = await runClaudeCommand(options.command, args, options);
-  return claudeCodeResultSchema.parse(normalizeCliResult(parseClaudeOutput(stdout)));
+    systemPrompt: SYSTEM_PROMPT,
+    cwd: options.cwd,
+    timeoutMs: options.timeoutMs,
+    jsonSchema: RESULT_JSON_SCHEMA,
+    allowedTools: ALLOWED_TOOLS,
+  });
+  return claudeCodeResultSchema.parse(normalizeCliResult(parsed));
 }
 
 function snapshotName(index: number, slug: string): string {
@@ -346,6 +337,7 @@ async function buildEvidence(
   unavailable: Map<number, ExplorationHarnessEvidence>,
   parsed: z.infer<typeof claudeCodeResultSchema>,
   patterns: string[],
+  label: string,
 ): Promise<ExplorationEvidence> {
   const citedBySlug = new Map(parsed.harnesses.map((entry) => [entry.slug, entry]));
   const harnesses: ExplorationHarnessEvidence[] = [];
@@ -379,8 +371,8 @@ async function buildEvidence(
         verified.files.length > 0
           ? null
           : cited
-            ? "本地 Claude Code 未引用该 harness 中可验证的代码"
-            : "本地 Claude Code 未分析该 harness",
+            ? `${label}未引用该 harness 中可验证的代码`
+            : `${label}未分析该 harness`,
       truncated: verified.truncated,
     });
   }
@@ -395,17 +387,20 @@ async function buildEvidence(
 }
 
 /**
- * Lets the locally installed Claude Code CLI explore checked-out snapshots of
- * the selected mirrors. Runs read-only and restricted to a temporary working
- * tree; any failure returns null so the caller can fall back to heuristics.
+ * Lets a locally installed coding-agent CLI explore checked-out snapshots of
+ * the selected mirrors. Runs read-only inside a temporary working tree; any
+ * failure returns null so the caller can fall back to heuristics.
  */
-export async function exploreWithClaudeCode(
+export async function exploreWithLocalEngine(
   db: Db,
   input: AgenticExplorationInput,
-  options: ClaudeCodeExplorationOptions = {},
+  options: LocalEngineExplorationOptions,
 ): Promise<AgenticExplorationResult | null> {
-  const command = options.command?.trim() || CLAUDE_CODE_DEFAULT_COMMAND;
-  if (!isValidClaudeCommand(command)) return null;
+  const engine = options.engine;
+  if (!isLocalEngineEnabled(engine)) return null;
+  const command = options.command?.trim() || LOCAL_ENGINE_DEFAULT_COMMANDS[engine];
+  if (!isValidLocalCommand(command)) return null;
+  const label = LOCAL_ENGINE_LABELS[engine];
 
   const sources = new Map<string, HarnessSource>();
   const unavailable = new Map<number, ExplorationHarnessEvidence>();
@@ -448,8 +443,7 @@ export async function exploreWithClaudeCode(
     if (snapshots.size === 0) return null;
 
     const prompt = buildUserPrompt(input, snapshots);
-    const parsed = await runClaudeCode(prompt, {
-      command,
+    const parsed = await runLocalExploration(engine, command, prompt, {
       cwd: root,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     });
@@ -463,7 +457,15 @@ export async function exploreWithClaudeCode(
     });
 
     const patterns = normalizePatterns(parsed.patterns);
-    const evidence = await buildEvidence(db, input, snapshots, unavailable, parsed, patterns);
+    const evidence = await buildEvidence(
+      db,
+      input,
+      snapshots,
+      unavailable,
+      parsed,
+      patterns,
+      label,
+    );
     return {
       synthesis: {
         summaryMd: parsed.summaryMd,
@@ -478,7 +480,7 @@ export async function exploreWithClaudeCode(
     };
   } catch (error) {
     console.warn(
-      "[zodiac] local Claude Code exploration failed, falling back to heuristic retrieval:",
+      `[zodiac] local ${engine} exploration failed, falling back to heuristic retrieval:`,
       cleanErrorMessage(error, 500),
     );
     return null;
@@ -486,4 +488,13 @@ export async function exploreWithClaudeCode(
     await Promise.all(attempted.map(({ mirrorDir, dir }) => removeSnapshot(mirrorDir, dir)));
     await removeSnapshotRoot(root);
   }
+}
+
+/** Backwards-compatible Claude Code entry used by older tests. */
+export function exploreWithClaudeCode(
+  db: Db,
+  input: AgenticExplorationInput,
+  options: ClaudeCodeExplorationOptions = {},
+): Promise<AgenticExplorationResult | null> {
+  return exploreWithLocalEngine(db, input, { ...options, engine: "claude-code" });
 }

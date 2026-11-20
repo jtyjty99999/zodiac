@@ -8,7 +8,14 @@
 
 ## 2026-11-20
 
-### docs: 增加版本迭代时间线与后续计划（本次提交）
+### feat: AI 引擎支持本地 Codex 与 DeepSeek Harness（本次提交）
+
+- **统一本地引擎层**：新增 `src/lib/localEngine/`，把「探测版本 + 无头调用 + 解析 JSON」抽成统一适配器，支持 Claude Code（`claude -p … --json-schema`）、Codex（`codex exec --sandbox read-only --ephemeral --output-last-message …`，提示词走 stdin）与 DeepSeek Harness（`dsh --profile headless "…"`）。
+- **三处调用点接入**：提交评审、按功能点 AI 重审、功能探索都按「API 优先，回退所选本地引擎」执行；`analyzed_by` / 审计引擎 / 探索引擎记录具体引擎（`codex`、`deepseek`），标签与报告同步展示。
+- **设置页与 API**：引擎下拉新增本地 Codex / DeepSeek Harness，三个命令输入框独立配置（`codexCommand`、`deepseekCommand`），环境状态展示每种 CLI 的可用性与版本；环境变量 `ZODIAC_LOCAL_ENGINE=off` 可一次禁用全部本地引擎。
+- **文档补齐**：`docs/usage.md` 设置章节补充本地 harness 对接（安装登录、无头参数、隔离方式与差异、回退与禁用开关），README 同步引擎说明、目录结构与用例数（336）。
+- **测试**：新增 `tests/unit/local-engine.test.ts`，用假可执行文件覆盖三种 CLI 的参数、stdin、结果文件与失败路径；重审与探索相关用例适配多引擎配置。
+### docs: 增加版本迭代时间线与后续计划 (`2319d01`)
 
 - 新增本文件，按时间倒序整理历次提交做了什么，并在 README 顶部加入口。
 - README 新增「后续计划（TBD）」：更多 harness、任务队列、多模型评审、基线版本差异、导出增强、探索缓存、通知、部署、窄屏适配、自动 changelog。

@@ -24,8 +24,13 @@ import {
   exploreWithClaude,
 } from "./agent";
 import { type ExplorationSynthesis, type SynthesisInput, synthesizeExploration } from "./ai";
-import { exploreWithClaudeCode } from "./claudeCode";
-import { type ExplorationEngineSettings, getExplorationEngineSettings } from "./engineSettings";
+import { exploreWithLocalEngine } from "./claudeCode";
+import {
+  type ExplorationEngineSettings,
+  getExplorationEngineSettings,
+  type LocalEngineKind,
+  localEngineSelection,
+} from "./engineSettings";
 import { buildEvidence } from "./evidence";
 import { extractKeywordsFor } from "./keywords";
 import { buildReport } from "./report";
@@ -142,11 +147,11 @@ export interface RunExplorationOptions {
     input: AgenticExplorationInput,
     options: { config?: AiConfig },
   ) => Promise<AgenticExplorationResult | null>;
-  /** Test seam: replaces the local Claude Code CLI exploration. */
+  /** Test seam: replaces the local engine CLI exploration. */
   exploreCode?: (
     db: Db,
     input: AgenticExplorationInput,
-    options: { command?: string },
+    options: { engine: LocalEngineKind; command?: string },
   ) => Promise<AgenticExplorationResult | null>;
 }
 
@@ -198,20 +203,19 @@ export async function runExploration(
     let synthesis: ExplorationSynthesis | null = null;
     let engine: ExplorationEngine = "heuristic";
 
-    // The local CLI is an explicit opt-in: when selected it runs even without
-    // ANTHROPIC_API_KEY, and its failures fall back to offline retrieval.
-    const useLocalCli = engineSettings.engine === "claude-code";
+    // Local engines are an explicit opt-in: when one is selected it runs even
+    // without ANTHROPIC_API_KEY, and its failures fall back to offline retrieval.
+    const selection = localEngineSelection(engineSettings);
+    const useLocalCli = engineSettings.engine !== "api";
     if (useLocalCli || config.enabled) {
       updateExplorationPhase(db, id, "explore");
       const ai = useLocalCli
-        ? await (options.exploreCode ?? exploreWithClaudeCode)(db, agentInput, {
-            command: engineSettings.command,
-          })
+        ? await (options.exploreCode ?? exploreWithLocalEngine)(db, agentInput, selection)
         : await (options.explore ?? exploreWithClaude)(db, agentInput, { config });
       if (ai) {
         evidence = ai.evidence;
         synthesis = ai.synthesis;
-        engine = useLocalCli ? "claude-code" : "claude";
+        engine = useLocalCli ? selection.engine : "claude";
         if (ai.patterns.length > 0) {
           updateExplorationKeywords(db, id, ai.patterns);
         }

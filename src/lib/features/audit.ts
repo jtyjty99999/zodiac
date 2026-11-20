@@ -2,12 +2,14 @@ import path from "node:path";
 import { z } from "zod";
 import { type AiConfig, getAiConfig } from "../analysis/anthropic";
 import { requestClaudeJson } from "../analysis/claudeJson";
-import { parseClaudeOutput, runClaudeCommand } from "../claude/cli";
 import type { Db } from "../db/client";
 import { listHarnesses } from "../db/repositories/harnesses";
 import {
   type ExplorationEngineSettings,
   getExplorationEngineSettings,
+  LOCAL_ENGINE_LABELS,
+  type LocalEngineKind,
+  localEngineSelection,
 } from "../explore/engineSettings";
 import { type HarnessSource, resolveHarnessSource } from "../explore/evidence";
 import { extractKeywords } from "../explore/keywords";
@@ -18,6 +20,7 @@ import {
   removeSnapshot,
   removeSnapshotRoot,
 } from "../git/snapshot";
+import { runLocalEngine } from "../localEngine";
 import type { Feature, FeatureAuditEngine, SupportStatus } from "../types";
 import { cleanErrorMessage } from "../utils/errors";
 import { nowIso } from "../utils/time";
@@ -313,34 +316,21 @@ async function auditWithApi(
 const ALLOWED_TOOLS = "Read,Grep,Glob";
 
 async function runAuditCli(
-  prompt: string,
+  engine: LocalEngineKind,
   command: string,
+  prompt: string,
   cwd: string,
   timeoutMs: number,
 ): Promise<FeatureAuditResult> {
-  const args = [
-    "-p",
+  const parsed = await runLocalEngine(engine, command, {
     prompt,
-    "--output-format",
-    "json",
-    "--restricted",
-    "--safe-mode",
-    "--strict-mcp-config",
-    "--disable-slash-commands",
-    "--tools",
-    ALLOWED_TOOLS,
-    "--allowedTools",
-    ALLOWED_TOOLS,
-    "--permission-prompts",
-    "none",
-    "--no-session-persistence",
-    "--append-system-prompt",
-    AUDIT_SYSTEM_PROMPT,
-    "--json-schema",
-    JSON.stringify(AUDIT_JSON_SCHEMA),
-  ];
-  const { stdout } = await runClaudeCommand(command, args, { cwd, timeoutMs });
-  return normalizeAuditResult(parseClaudeOutput(stdout));
+    systemPrompt: AUDIT_SYSTEM_PROMPT,
+    cwd,
+    timeoutMs,
+    jsonSchema: AUDIT_JSON_SCHEMA,
+    allowedTools: ALLOWED_TOOLS,
+  });
+  return normalizeAuditResult(parsed);
 }
 
 function snapshotName(index: number, slug: string): string {
@@ -351,7 +341,7 @@ function snapshotName(index: number, slug: string): string {
 async function auditWithCli(
   feature: Feature,
   sources: Map<string, HarnessSource>,
-  command: string,
+  selection: { engine: LocalEngineKind; command: string },
   timeoutMs: number,
 ): Promise<FeatureAuditResult | null> {
   const root = createSnapshotRoot();
@@ -377,8 +367,9 @@ async function auditWithCli(
     if (snapshots.size === 0) return null;
 
     const result = await runAuditCli(
+      selection.engine,
+      selection.command,
       buildAuditPrompt(feature, snapshots),
-      command,
       root,
       timeoutMs,
     );
@@ -391,7 +382,7 @@ async function auditWithCli(
 
 /**
  * Audits one feature against every harness mirror. API first (keyword evidence),
- * then the local Claude Code CLI reading full snapshots. Throws when no engine
+ * then the configured local engine reading full snapshots. Throws when no engine
  * could produce a result so the caller can record a visible failure.
  */
 export async function auditFeature(
@@ -421,23 +412,24 @@ export async function auditFeature(
   }
 
   const engineSettings = options.engineSettings ?? getExplorationEngineSettings(db);
-  const command = engineSettings.command.trim();
+  const selection = localEngineSelection(engineSettings);
+  const label = LOCAL_ENGINE_LABELS[selection.engine];
   try {
     const result = await auditWithCli(
       feature,
       sources,
-      command,
+      selection,
       options.timeoutMs ?? AUDIT_TIMEOUT_MS,
     );
-    if (result) return { result, engine: "claude-code", revs: revsOf(sources) };
+    if (result) return { result, engine: selection.engine, revs: revsOf(sources) };
   } catch (error) {
     console.warn(
-      "[zodiac] local Claude Code feature audit failed:",
+      `[zodiac] local ${selection.engine} feature audit failed:`,
       cleanErrorMessage(error, MAX_ERROR_CHARS),
     );
-    throw new Error(`本地 Claude Code 审查失败：${cleanErrorMessage(error, 300)}`);
+    throw new Error(`${label} 审查失败：${cleanErrorMessage(error, 300)}`);
   }
-  throw new Error("没有可用的审查引擎：API 未启用且本地 Claude Code 不可用");
+  throw new Error(`没有可用的审查引擎：API 未启用且${label}不可用`);
 }
 
 function revsOf(sources: Map<string, HarnessSource>): Record<string, string> {

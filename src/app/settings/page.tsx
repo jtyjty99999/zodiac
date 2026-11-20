@@ -3,8 +3,13 @@ import { PageHeader, SectionCard } from "@/components/ui";
 import { getAiConfig } from "@/lib/analysis/anthropic";
 import { getDb } from "@/lib/db/client";
 import { getAllSettings } from "@/lib/db/repositories/settings";
-import { getClaudeCodeStatus } from "@/lib/explore/claudeCode";
-import { getExplorationEngineSettings } from "@/lib/explore/engineSettings";
+import {
+  getExplorationEngineSettings,
+  LOCAL_ENGINE_KINDS,
+  LOCAL_ENGINE_LABELS,
+  localCommandFor,
+} from "@/lib/explore/engineSettings";
+import { getLocalEngineStatus } from "@/lib/localEngine";
 import { getTimezone } from "@/lib/utils/time";
 
 export const metadata = { title: "设置" };
@@ -26,7 +31,12 @@ export default async function SettingsPage() {
   const ai = getAiConfig(db);
   const settings = getAllSettings(db);
   const engineSettings = getExplorationEngineSettings(db);
-  const claudeStatus = await getClaudeCodeStatus(engineSettings.command);
+  const localStatuses = await Promise.all(
+    LOCAL_ENGINE_KINDS.map((engine) =>
+      getLocalEngineStatus(engine, localCommandFor(engineSettings, engine)),
+    ),
+  );
+  const selectedEngine = engineSettings.engine;
   const storedAiEnabled = settings.aiEnabled;
   const initial = {
     aiEnabled: storedAiEnabled === null ? ai.hasKey : storedAiEnabled === "true",
@@ -35,10 +45,16 @@ export default async function SettingsPage() {
     timezone: getTimezone(),
     exploreEngine: engineSettings.engine,
     claudeCodeCommand: engineSettings.command,
+    codexCommand: engineSettings.codexCommand,
+    deepseekCommand: engineSettings.deepseekCommand,
   };
 
   const schedulerEnabled = process.env.ZODIAC_SCHEDULER !== "off";
   const hasGithubToken = Boolean(process.env.GITHUB_TOKEN?.trim());
+  const selectedStatus =
+    selectedEngine === "api"
+      ? null
+      : localStatuses.find((status) => status.engine === selectedEngine);
 
   return (
     <div>
@@ -59,15 +75,20 @@ export default async function SettingsPage() {
             />
             <StatusRow label="AI 分析" value={ai.enabled ? "已启用" : "未启用"} ok={ai.enabled} />
             <StatusRow
-              label="功能探索引擎"
-              value={engineSettings.engine === "claude-code" ? "本地 Claude Code" : "Anthropic API"}
-              ok={engineSettings.engine !== "claude-code" || claudeStatus.available}
+              label="当前 AI 引擎"
+              value={
+                selectedEngine === "api" ? "Anthropic API" : LOCAL_ENGINE_LABELS[selectedEngine]
+              }
+              ok={selectedEngine === "api" ? ai.hasKey : Boolean(selectedStatus?.available)}
             />
-            <StatusRow
-              label={`本地 Claude Code（${engineSettings.command}）`}
-              value={claudeStatus.available ? (claudeStatus.version ?? "可用") : "不可用"}
-              ok={claudeStatus.available}
-            />
+            {localStatuses.map((status) => (
+              <StatusRow
+                key={status.engine}
+                label={`${LOCAL_ENGINE_LABELS[status.engine]}（${status.command}）`}
+                value={status.available ? (status.version ?? "可用") : "不可用"}
+                ok={status.available}
+              />
+            ))}
             <StatusRow
               label="后台调度器"
               value={schedulerEnabled ? "运行中" : "已关闭"}
@@ -85,6 +106,8 @@ export default async function SettingsPage() {
               <li>ZODIAC_TZ — 归档时区</li>
               <li>ZODIAC_DB_PATH — SQLite 路径</li>
               <li>ZODIAC_SCHEDULER=off — 关闭定时同步</li>
+              <li>ZODIAC_LOCAL_ENGINE=off — 禁用全部本地引擎</li>
+              <li>ZODIAC_LOCAL_CLAUDE=off — 仅禁用本地 Claude Code</li>
               <li>ANTHROPIC_API_KEY / ANTHROPIC_MODEL</li>
               <li>GITHUB_TOKEN — GitHub Releases API</li>
             </ul>
@@ -93,8 +116,9 @@ export default async function SettingsPage() {
       </div>
 
       <p className="mt-4 text-[11px] text-muted">
-        提示：AI 调用有每次同步的条数上限与超时保护，失败时自动回退到启发式分析。本地 Claude Code
-        探索只读、禁网、忽略项目配置与 MCP，在临时快照中运行，失败时同样回退到离线检索。
+        提示：AI 调用有每次同步的条数上限与超时保护，失败时自动回退到启发式分析。本地引擎（Claude
+        Code / Codex / DeepSeek
+        Harness）在临时快照与只读沙箱中运行，失败时同样回退到离线检索或启发式分析。
       </p>
     </div>
   );

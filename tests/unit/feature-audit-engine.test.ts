@@ -6,7 +6,7 @@ vi.mock("@/lib/explore/evidence", () => ({ resolveHarnessSource: vi.fn() }));
 vi.mock("@/lib/analysis/claudeJson", () => ({ requestClaudeJson: vi.fn() }));
 vi.mock("@/lib/claude/cli", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/claude/cli")>();
-  return { ...actual, runClaudeCommand: vi.fn() };
+  return { ...actual, runLocalCommand: vi.fn() };
 });
 vi.mock("@/lib/git/search", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/git/search")>();
@@ -22,7 +22,7 @@ vi.mock("@/lib/git/snapshot", () => ({
 }));
 
 import { requestClaudeJson } from "@/lib/analysis/claudeJson";
-import { runClaudeCommand } from "@/lib/claude/cli";
+import { runLocalCommand } from "@/lib/claude/cli";
 import { listHarnesses } from "@/lib/db/repositories/harnesses";
 import { resolveHarnessSource } from "@/lib/explore/evidence";
 import { auditFeature, buildAuditPrompt } from "@/lib/features/audit";
@@ -30,7 +30,12 @@ import { readBlob, searchMirror } from "@/lib/git/search";
 import { createSnapshot } from "@/lib/git/snapshot";
 
 const config = { enabled: true, hasKey: true, model: "claude-sonnet-5", maxPerSync: 5 };
-const engineSettings = { engine: "claude-code" as const, command: "claude" };
+const engineSettings = {
+  engine: "claude-code" as const,
+  command: "claude",
+  codexCommand: "codex",
+  deepseekCommand: "dsh",
+};
 
 const harness: Harness = {
   id: 1,
@@ -88,7 +93,7 @@ const modelOutput = {
 
 const mocked = {
   requestClaudeJson: vi.mocked(requestClaudeJson),
-  runClaudeCommand: vi.mocked(runClaudeCommand),
+  runLocalCommand: vi.mocked(runLocalCommand),
   listHarnesses: vi.mocked(listHarnesses),
   resolveHarnessSource: vi.mocked(resolveHarnessSource),
   readBlob: vi.mocked(readBlob),
@@ -97,6 +102,8 @@ const mocked = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The global test setup disables local engines; this file stubs the runner.
+  delete process.env.ZODIAC_LOCAL_CLAUDE;
   mocked.listHarnesses.mockReturnValue([harness]);
   mocked.resolveHarnessSource.mockResolvedValue({ ok: true, source });
   mocked.readBlob.mockResolvedValue("line one\nline two\nline three\n");
@@ -125,12 +132,12 @@ describe("auditFeature", () => {
     expect(mocked.requestClaudeJson).toHaveBeenCalledWith(
       expect.objectContaining({ system: expect.stringContaining("不可信数据") }),
     );
-    expect(mocked.runClaudeCommand).not.toHaveBeenCalled();
+    expect(mocked.runLocalCommand).not.toHaveBeenCalled();
   });
 
   test("falls back to local Claude Code snapshots when the API yields nothing", async () => {
     mocked.requestClaudeJson.mockResolvedValue(null);
-    mocked.runClaudeCommand.mockResolvedValue({
+    mocked.runLocalCommand.mockResolvedValue({
       stdout: JSON.stringify({ type: "result", is_error: false, structured_output: modelOutput }),
       stderr: "",
     });
@@ -139,7 +146,7 @@ describe("auditFeature", () => {
 
     expect(outcome.engine).toBe("claude-code");
     expect(outcome.result.overviewMd).toBe("两端都支持");
-    const args = mocked.runClaudeCommand.mock.calls[0][1];
+    const args = mocked.runLocalCommand.mock.calls[0][1];
     expect(args).toContain("--json-schema");
     expect(args).toContain("Read,Grep,Glob");
   });
@@ -153,7 +160,7 @@ describe("auditFeature", () => {
 
   test("reports a local CLI failure", async () => {
     mocked.requestClaudeJson.mockResolvedValue(null);
-    mocked.runClaudeCommand.mockRejectedValue(new Error("not logged in"));
+    mocked.runLocalCommand.mockRejectedValue(new Error("not logged in"));
 
     await expect(auditFeature({} as never, feature, { config, engineSettings })).rejects.toThrow(
       /本地 Claude Code 审查失败/,

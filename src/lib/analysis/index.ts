@@ -9,11 +9,16 @@ import {
   updateCommitAnalysis,
 } from "../db/repositories/commits";
 import { getHarnessById } from "../db/repositories/harnesses";
-import { getClaudeCodeStatus } from "../explore/claudeCode";
-import { getExplorationEngineSettings } from "../explore/engineSettings";
+import {
+  getExplorationEngineSettings,
+  isLocalEngineEnabled,
+  type LocalEngineKind,
+  localEngineSelection,
+} from "../explore/engineSettings";
 import { readPatch } from "../git/log";
 import { mirrorPath } from "../git/mirror";
 import { readDiff } from "../git/storage";
+import { getLocalEngineStatus } from "../localEngine";
 import type { Commit, CommitCategory, Harness } from "../types";
 import {
   type AiAnalysis,
@@ -25,10 +30,10 @@ import {
 import { classifyCommit } from "./classify";
 import { refreshDailyReport } from "./daily";
 import { extractTags, heuristicSummary, suggestCandidate } from "./heuristic";
-import { analyzeWithLocalClaude } from "./localClaude";
+import { analyzeWithLocalEngine } from "./localClaude";
 import { rateCommit } from "./rating";
 
-export type AnalyzedBy = "heuristic" | "heuristic+claude" | "claude-code";
+export type AnalyzedBy = "heuristic" | "heuristic+claude" | LocalEngineKind;
 
 export interface AnalyzeOptions {
   useAi?: boolean;
@@ -52,31 +57,33 @@ export interface AnalyzeOutcome {
 }
 
 const LOCAL_STATUS_TTL_MS = 60_000;
-let localStatusCache: { command: string; checkedAt: number; available: boolean } | null = null;
-
-/** `ZODIAC_LOCAL_CLAUDE=off` disables the local CLI fallback entirely. */
-function isLocalClaudeEnabled(): boolean {
-  return process.env.ZODIAC_LOCAL_CLAUDE !== "off";
-}
+let localStatusCache: {
+  engine: LocalEngineKind;
+  command: string;
+  checkedAt: number;
+  available: boolean;
+} | null = null;
 
 /** Local CLI availability is cached so a sync does not probe once per commit. */
-async function isLocalClaudeAvailable(command: string): Promise<boolean> {
-  if (!isLocalClaudeEnabled()) return false;
+async function isLocalEngineAvailable(engine: LocalEngineKind, command: string): Promise<boolean> {
+  if (!isLocalEngineEnabled(engine)) return false;
   const now = Date.now();
   if (
     localStatusCache &&
+    localStatusCache.engine === engine &&
     localStatusCache.command === command &&
     now - localStatusCache.checkedAt < LOCAL_STATUS_TTL_MS
   ) {
     return localStatusCache.available;
   }
-  const status = await getClaudeCodeStatus(command);
-  localStatusCache = { command, checkedAt: now, available: status.available };
+  const status = await getLocalEngineStatus(engine, command);
+  localStatusCache = { engine, command, checkedAt: now, available: status.available };
   return status.available;
 }
 
 function normalizeAnalyzedBy(value: string | null): AnalyzedBy {
   if (value === "heuristic+claude" || value === "claude-code") return value;
+  if (value === "codex" || value === "deepseek") return value;
   return "heuristic";
 }
 
@@ -183,16 +190,18 @@ export async function analyzeCommitById(
     if (!reviewed) {
       if (options.localAnalyzer) {
         reviewed = await options.localAnalyzer(context);
+        if (reviewed) analyzedBy = "claude-code";
       } else {
-        const { command } = getExplorationEngineSettings(db);
-        if (await isLocalClaudeAvailable(command)) {
-          reviewed = await analyzeWithLocalClaude(context, {
-            command,
+        const selection = localEngineSelection(getExplorationEngineSettings(db));
+        if (await isLocalEngineAvailable(selection.engine, selection.command)) {
+          reviewed = await analyzeWithLocalEngine(context, {
+            engine: selection.engine,
+            command: selection.command,
             timeoutMs: options.localTimeoutMs,
           });
+          if (reviewed) analyzedBy = selection.engine;
         }
       }
-      if (reviewed) analyzedBy = "claude-code";
     }
 
     if (reviewed) {

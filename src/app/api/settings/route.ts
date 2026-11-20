@@ -68,6 +68,12 @@ export async function POST(request: Request) {
     if (input.claudeCodeCommand !== undefined) {
       setSetting(db, "claudeCodeCommand", input.claudeCodeCommand);
     }
+    if (input.codexCommand !== undefined) {
+      setSetting(db, "codexCommand", input.codexCommand);
+    }
+    if (input.deepseekCommand !== undefined) {
+      setSetting(db, "deepseekCommand", input.deepseekCommand);
+    }
 
     return apiOk(settingsPayload(db));
   } catch (error) {

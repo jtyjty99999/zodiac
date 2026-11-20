@@ -42,6 +42,8 @@ pnpm dev      # http://localhost:3000
 
 **自动同步**由应用内调度器完成（每 60 秒检查一次到期情况）：在 Harness 管理里把调度设为「每小时」或「每天 HH:MM」即可。设置 `ZODIAC_SCHEDULER=off` 可完全关闭自动同步。
 
+**本地 AI 引擎（可选）**：本机已安装并登录 Claude Code、Codex 或 DeepSeek Harness 时，可以在「[设置](#11-设置) → AI 引擎」把功能探索、AI 重审与提交评审切换到本地 CLI，无需 `ANTHROPIC_API_KEY`。
+
 ---
 
 ## 2. 概览
@@ -123,7 +125,7 @@ pnpm dev      # http://localhost:3000
 
 对比页顶部的「AI 重审功能点」会按需重审**当前这一个功能点**：模型读取每个 harness 的代码快照，重新判断支持状态、整理实现细节，并重写横向差异总结。
 
-- **引擎自动选择**：优先 Anthropic API（按功能名称、描述、标签检索镜像中的代码片段作为证据）；未配置或失败时回退本地 Claude Code CLI（只读受限模式 + 临时 worktree 快照，可完整浏览代码）。
+- **引擎自动选择**：优先 Anthropic API（按功能名称、描述、标签检索镜像中的代码片段作为证据）；未配置或失败时回退「设置 → AI 引擎」中选择的本地 CLI（Claude Code / Codex / DeepSeek Harness，只读模式 + 临时 worktree 快照，可完整浏览代码）。
 - **直接写入 + 新基线**：成功后覆盖该功能点的 `overview_md` / `diff_summary_md`、每个 harness 的 `feature_support`（状态、备注、证据）与 `feature_details`（实现细节），并生成一个新的带日期基线版本；同时自动把该功能点标记为「深挖」（可在对比页手动取消）。需要回滚时可在「基线版本」页对照历史版本与快照 JSON。
 - **可核对**：模型提交的每条证据（`path:line`）都会回到镜像逐一验证，不存在或行号越界的引用会被丢弃；页面可展开「最近一次重审报告」查看每个 harness 的结论与证据。
 - **只处理有本地镜像的 harness**：尚未同步的仓库会被跳过，不会把旧状态误判为「不支持」。
@@ -145,17 +147,28 @@ pnpm dev      # http://localhost:3000
 
 同一时间只允许一条探索在运行，重复提交会提示等待它完成。
 
-**选择探索引擎**：在「设置 → 功能探索引擎」中选择：
+**选择探索引擎**：在「设置 → AI 引擎」中选择：
 
 - **Anthropic API（默认）**：需要 `ANTHROPIC_API_KEY` 并启用「Claude 增强分析」，由 Claude 通过应用内置的只读工具循环探索。
 - **本地 Claude Code CLI**：直接调用本机已安装并登录的 `claude` 命令（默认命令名 `claude`，也可填绝对路径），不消耗 `ANTHROPIC_API_KEY`。设置页会显示该命令是否可用及版本号。
+- **本地 Codex CLI**：调用本机 `codex`（默认命令名 `codex`）。以 `codex exec --sandbox read-only --ephemeral --skip-git-repo-check` 无头运行，跳过项目 `AGENTS.md`、不写会话历史；提示词通过 stdin 传入，结果从 `--output-last-message` 临时文件读取。
+- **本地 DeepSeek Harness**：调用本机 `dsh`（默认命令名 `dsh`）。以 `dsh --profile headless "<任务>"` 运行，打印最终回答后退出；没有 JSON Schema 参数，输出的 JSON 由应用解析并校验。
 
-本地模式下，系统把选中 harness 的当前分支 HEAD 检出到系统临时目录的 detached worktree 快照，然后以 `--print` 无头模式运行一次 Claude Code：
+本地模式（三种 CLI 相同）都会把选中 harness 的当前分支 HEAD 检出到系统临时目录的 detached worktree 快照，运行结束后删除；只会读取快照，不会修改 mirror 或当前工作区。
+
+Claude Code 的具体约束：
 
 - 仅开放 `Read / Grep / Glob` 三个只读工具，并启用 `--restricted`、`--safe-mode`、`--strict-mcp-config`：禁止执行命令（Bash/Write/Edit 等）、忽略项目 `CLAUDE.md`、用户/项目设置、skills、hooks 与 MCP，不会继承本仓库的 Agent 配置。
 - 快照是只读检查点；运行结束后 worktree 与临时目录会被删除，不会修改 mirror。
 - Claude Code 返回结构化 JSON（`--json-schema`），其中引用的文件与行号会回到 git 对象中逐一校验：越界路径、不存在的文件与越界行号会被丢弃，只保留可验证的 `path:line` 证据。
-- 单次探索总时长上限约 5 分钟；超时、未登录、输出无法解析等失败都会回退到离线检索，探索本身不会失败。
+
+Codex / DeepSeek Harness 的差异：
+
+- Codex 的隔离依赖只读沙箱，而不是工具白名单：它可以执行只读命令，但无法写文件或访问网络写入；同样不支持项目文档，避免仓库内指令影响分析。
+- DeepSeek Harness 的 headless profile 没有工具白名单与 Schema 强制，只能依赖临时权限目录与提示词约束；它没有结构化输出参数，应用会从 stdout 提取 JSON 并按内置 Schema 校验，解析失败时回退到离线检索。
+- 三种 CLI 都需要先生成可用的登录态（`claude` 登录、`codex login`、`dsh` 自身的 provider 配置）；设置页「环境状态」会用 `--version` 探测每个命令是否可用并显示版本。
+
+单次探索总时长上限约 5 分钟；超时、未登录、输出无法解析等失败都会回退到离线检索，探索本身不会失败。设置 `ZODIAC_LOCAL_ENGINE=off` 可禁用全部本地引擎。
 
 **API 自主探索**：配置 `ANTHROPIC_API_KEY` 并启用「Claude 增强分析」后，由 Claude 自己决定去哪里、搜什么，而不是依赖固定的关键词表：
 
@@ -181,7 +194,7 @@ pnpm dev      # http://localhost:3000
 
 没有可用的 AI 引擎（或本次调用失败回退到离线检索）时，报告开头会明确标注「本次未运行 AI 分析」，此时只有代码命中位置，没有实现方案分析；启用 AI 后重新探索即可获得完整方案。
 
-**引擎与回退**：报告顶部会标注引擎——「Claude 自主探索」（API 工具循环成功）、「本地 Claude Code 探索」（本地 CLI 成功并返回可验证引用）、「启发式 + Claude」（AI 探索失败后回退检索并由 Claude 综合）、「启发式」（完全离线）。AI 超时、网络错误、CLI 未登录或输出无法解析时自动回退，探索本身不会因此失败。代码片段被视为不可信数据，Claude 被要求只引用实际看到的内容、不编造路径与行号。
+**引擎与回退**：报告顶部会标注引擎——「Claude 自主探索」（API 工具循环成功）、「本地 Claude Code / 本地 Codex / 本地 DeepSeek Harness 探索」（对应本地 CLI 成功并返回可验证引用）、「启发式 + Claude」（AI 探索失败后回退检索并由 Claude 综合）、「启发式」（完全离线）。AI 超时、网络错误、CLI 未登录或输出无法解析时自动回退，探索本身不会因此失败。代码片段被视为不可信数据，模型被要求只引用实际看到的内容、不编造路径与行号。
 
 **状态说明**：
 
@@ -228,7 +241,7 @@ pnpm dev      # http://localhost:3000
 **提交页签**
 
 - 筛选：标题/正文/SHA 搜索、Harness、分类（功能迭代、性能优化、缺陷修复、重构整理、文档、测试、工程与工具、其他）、起止日期；「重置」清空筛选。
-- 列表每页 40 条，显示分类、1–5 星评级、增删行数、文件与分析引擎（启发式 / Claude API / 本地 Claude Code）。
+- 列表每页 40 条，显示分类、1–5 星评级、增删行数、文件与分析引擎（启发式 / Claude API / 本地 Claude Code / 本地 Codex / 本地 DeepSeek Harness）。
 - 未分析的提交分类显示为「未分析」。
 
 **发版页签**
@@ -239,10 +252,10 @@ pnpm dev      # http://localhost:3000
 
 ![提交详情](screenshots/08-commit-detail.png)
 
-- 顶部「GitHub」外链到原始提交；「重新分析」会重新生成分类、评级与评审：优先使用 Anthropic API，未配置或调用失败时自动回退本地 Claude Code CLI，仍不可用则使用启发式规则。分析在后台执行，按钮每 2 秒轮询进度；分析中刷新页面会继续显示「分析中…」并接上同一次任务，重复点击不会启动第二次分析。
+- 顶部「GitHub」外链到原始提交；「重新分析」会重新生成分类、评级与评审：优先使用 Anthropic API，未配置或调用失败时自动回退「设置 → AI 引擎」中选择的本地 CLI，仍不可用则使用启发式规则。分析在后台执行，按钮每 2 秒轮询进度；分析中刷新页面会继续显示「分析中…」并接上同一次任务，重复点击不会启动第二次分析。
 - 四张卡：分类、评级、变更规模、分析引擎与时间。
 - 「评审与代码解读」：像 code review 一样分四节说明——「解决的问题」「具体改动」（最多 3–5 条，只点关键文件与核心函数）「实现解读」（3–5 步讲清思路与执行流程，只引用几个关键函数）「影响与风险」，并给出评级理由。正文通常 300–600 字，不逐文件、逐函数、逐行翻译 diff；diff 较长时以截断摘录分析并注明盲区。评级依据功能重要性、影响面与风险，改动行数不作为加分项。
-- 分析引擎标记：「启发式」（仅依据提交信息与文件清单，未读取 diff）、「Claude API」（Anthropic API 评审）、「本地 Claude Code」（本机 `claude` CLI 评审）。
+- 分析引擎标记：「启发式」（仅依据提交信息与文件清单，未读取 diff）、「Claude API」（Anthropic API 评审）、「本地 Claude Code」（本机 `claude` CLI 评审）、「本地 Codex」（本机 `codex` CLI 评审）、「本地 DeepSeek Harness」（本机 `dsh` CLI 评审）。
 - 「代码变更」：标注统计是否完整；diff 超过 1500 行会截断显示。
 - 侧栏：文件列表（状态与增删）、功能标签、仓库信息（分支、SHA、提交时间）。
 
@@ -337,25 +350,40 @@ pnpm dev      # http://localhost:3000
 
 **可编辑项**：
 
-| 设置                   | 说明                                                                          |
-| ---------------------- | ----------------------------------------------------------------------------- |
-| 启用 Claude 增强分析   | 需要配置 `ANTHROPIC_API_KEY`；关闭时提交评审直接使用本地 Claude Code 或启发式 |
-| 模型                   | 默认 `claude-sonnet-5`，可被环境变量 `ANTHROPIC_MODEL` 或此处保存值覆盖       |
-| 每次同步的 AI 分析上限 | 0–200，默认 20；0 表示不调用 AI，超出部分仍走启发式                           |
-| 时区（按天归档）       | 影响按天归档与每日调度；保存后写入数据库并作用于当前进程                      |
-| 探索引擎               | 「Anthropic API」或「本地 Claude Code CLI」；决定功能探索由谁执行             |
-| Claude Code 命令       | 本地模式的命令名或绝对路径，默认 `claude`；不经过 shell                       |
+| 设置                   | 说明                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| 启用 Claude 增强分析   | 需要配置 `ANTHROPIC_API_KEY`；关闭时提交评审直接使用所选本地引擎或启发式                         |
+| 模型                   | 默认 `claude-sonnet-5`，可被环境变量 `ANTHROPIC_MODEL` 或此处保存值覆盖                          |
+| 每次同步的 AI 分析上限 | 0–200，默认 20；0 表示不调用 AI，超出部分仍走启发式                                              |
+| 时区（按天归档）       | 影响按天归档与每日调度；保存后写入数据库并作用于当前进程                                         |
+| 引擎                   | 「Anthropic API」或本地 Claude Code / Codex / DeepSeek Harness；决定探索、重审与提交评审由谁执行 |
+| Claude Code 命令       | 本地模式的命令名或绝对路径，默认 `claude`；不经过 shell                                          |
+| Codex 命令             | 默认 `codex`；不经过 shell                                                                       |
+| DeepSeek Harness 命令  | 默认 `dsh`；不经过 shell                                                                         |
 
-提交评审的模型调用（API 或本地 Claude Code）计入「每次同步的 AI 分析上限」，并有超时保护；两者都不可用时自动回退启发式，不会中断同步。功能探索在 API 自主探索模式下最多约 13 次模型调用（12 步工具循环 + 1 次报告生成），不受同步条数上限约束；本地 Claude Code 模式按 CLI 自身的额度与权限运行，单次约 5 分钟超时；回退到离线检索后最多调用一次 AI 综合。
+**本地 AI 引擎（harness 对接）**：三种本地 CLI 共用同一套选择逻辑——设置了本地引擎后，功能探索、AI 重审与提交评审都会优先调用它；它失败时，探索回退离线检索，重审与提交评审回退启发式。三个命令输入框互相独立，只有当前选中引擎的命令必须非空。
 
-**右侧「环境状态」**：直观显示 `ANTHROPIC_API_KEY`、AI 分析、功能探索引擎、本地 Claude Code（命令与版本）、后台调度器、`GITHUB_TOKEN` 的配置情况。
+| 引擎                  | 无头调用方式                                                                                                                          | 隔离方式                                                       |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| 本地 Claude Code      | `claude -p <prompt> --output-format json --restricted --safe-mode --strict-mcp-config --disable-slash-commands --json-schema …`       | 只读工具白名单（`Read / Grep / Glob`）+ 忽略项目配置与 MCP     |
+| 本地 Codex            | `codex exec --sandbox read-only --ephemeral --skip-git-repo-check --color never -c project_doc_max_bytes=0 --output-last-message … -` | 只读沙箱；跳过 `AGENTS.md`；提示词走 stdin，结果读临时文件     |
+| 本地 DeepSeek Harness | `dsh --profile headless "<system + prompt>"`                                                                                          | 临时工作目录；无工具白名单与 Schema 参数，输出经应用解析与校验 |
+
+- **前置条件**：命令需已安装并在 `PATH` 中（或直接填绝对路径），且已在该 CLI 中完成登录 / provider 配置。设置页右侧「环境状态」会用 `<命令> --version` 探测三种 CLI，并显示版本号。
+- **安全边界**：命令通过 `execFile` 以参数数组执行，不经过 shell；命令名只接受单行字符串，长度上限 500，包含控制字符会被拒绝。探索与重审只在临时快照中读代码，不写入仓库。
+- **差异与回退**：Claude Code 有工具白名单与 JSON Schema；Codex 依赖只读沙箱，可以用只读命令但无法写文件；DeepSeek Harness 没有 Schema 参数，模型输出需由应用解析校验，失败时自动回退。`ZODIAC_LOCAL_ENGINE=off` 可一次禁用全部本地引擎，`ZODIAC_LOCAL_CLAUDE=off` 只禁用 Claude Code。
+
+提交评审的模型调用（API 或本地引擎）计入「每次同步的 AI 分析上限」，并有超时保护；都不可用时自动回退启发式，不会中断同步。功能探索在 API 自主探索模式下最多约 13 次模型调用（12 步工具循环 + 1 次报告生成），不受同步条数上限约束；本地引擎按 CLI 自身的额度与权限运行，单次约 5 分钟超时；回退到离线检索后最多调用一次 AI 综合。
+
+**右侧「环境状态」**：直观显示 `ANTHROPIC_API_KEY`、AI 分析、当前 AI 引擎、三种本地 CLI（命令与版本）、后台调度器、`GITHUB_TOKEN` 的配置情况。
 
 **只能通过环境变量控制的项**：
 
 - `ZODIAC_SCHEDULER=off`：关闭应用内调度器（表单里没有开关）。
 - `ZODIAC_DB_PATH`：SQLite 文件位置。
 - `ZODIAC_TZ`：默认归档时区（表单修改只在当前进程生效，重启后以环境变量为准）。
-- `ZODIAC_LOCAL_CLAUDE=off`：禁用提交评审的本地 Claude Code 回退（例如不希望同步时启动本机 CLI）。
+- `ZODIAC_LOCAL_ENGINE=off`：禁用全部本地 AI 引擎（Claude Code / Codex / DeepSeek Harness）。
+- `ZODIAC_LOCAL_CLAUDE=off`：只禁用本地 Claude Code（例如不希望同步时启动本机 CLI）。
 
 密钥只从环境变量读取，不会写入数据库或页面。
 
@@ -399,6 +427,9 @@ pnpm reanalyze --reset-candidates  # 先清空待审候选再重算
 
 **数据存在哪里？**
 SQLite 在 `data/zodiac.db`，bare mirror 在 `data/mirrors/`，按需落盘的 diff 在 `data/diffs/`。这些目录默认被 git 忽略。
+
+**本地引擎显示「不可用」？**
+设置页用 `<命令> --version` 探测。确认命令已安装并在 `PATH` 中（或在设置里填绝对路径）、已在该 CLI 完成登录，且没有设置 `ZODIAC_LOCAL_ENGINE=off` / `ZODIAC_LOCAL_CLAUDE=off`。
 
 **Markdown 会执行 HTML 吗？**
 不会。点评、日报与对比内容默认不渲染原始 HTML。

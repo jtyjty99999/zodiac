@@ -7,9 +7,13 @@ test("settings shows analysis, routing and timezone controls", async ({ page }) 
   await expect(page.locator("#settings-ai-model")).toBeVisible();
   await expect(page.locator("#settings-timezone")).toHaveValue("Asia/Shanghai");
   // The engine choice is persisted user state, so assert the control exposes
-  // exactly the two supported engines rather than one particular stored value.
-  await expect(page.locator("#settings-explore-engine")).toHaveValue(/^(api|claude-code)$/);
-  await expect(page.locator("#settings-claude-command")).not.toHaveValue("");
+  // exactly the supported engines rather than one particular stored value.
+  await expect(page.locator("#settings-explore-engine")).toHaveValue(
+    /^(api|claude-code|codex|deepseek)$/,
+  );
+  await expect(page.locator("#settings-claude-code-command")).not.toHaveValue("");
+  await expect(page.locator("#settings-codex-command")).not.toHaveValue("");
+  await expect(page.locator("#settings-deepseek-command")).not.toHaveValue("");
   await expect(page.getByRole("button", { name: "保存设置" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "环境变量" })).toBeVisible();
 });

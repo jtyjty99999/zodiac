@@ -1,9 +1,19 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, test, vi } from "vitest";
 import type { AiCommitContext } from "@/lib/analysis/anthropic";
 import { analyzeWithLocalClaude } from "@/lib/analysis/localClaude";
+
+// The global test setup disables local engines; this file drives a fake
+// `claude` executable, so the Claude Code engine is enabled for its duration.
+beforeAll(() => {
+  delete process.env.ZODIAC_LOCAL_CLAUDE;
+});
+
+afterAll(() => {
+  process.env.ZODIAC_LOCAL_CLAUDE = "off";
+});
 
 const context: AiCommitContext = {
   repo: "https://github.com/openai/codex",

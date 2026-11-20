@@ -20,6 +20,7 @@ import {
   getFeatureAudit,
 } from "../db/repositories/featureAudits";
 import { listHarnesses } from "../db/repositories/harnesses";
+import { getExplorationEngineSettings, localEngineSelection } from "../explore/engineSettings";
 import type { Feature, FeatureAudit } from "../types";
 import { cleanErrorMessage } from "../utils/errors";
 import { toDay } from "../utils/time";
@@ -73,9 +74,13 @@ export function beginFeatureAudit(db: Db, featureKey: string): FeatureAudit {
   if (activeAudits.size > 0) throw new FeatureAuditBusyError();
 
   const config = getAiConfig(db);
+  const engine =
+    config.enabled && config.hasKey
+      ? "claude"
+      : localEngineSelection(getExplorationEngineSettings(db)).engine;
   const audit = createFeatureAudit(db, {
     featureId: feature.id,
-    engine: config.enabled && config.hasKey ? "claude" : "claude-code",
+    engine,
   });
   activeAudits.add(audit.id);
   return audit;

@@ -5,6 +5,7 @@ import type {
   SupportStatus,
 } from "../types";
 import type { ExplorationSynthesis } from "./ai";
+import { LOCAL_ENGINE_LABELS } from "./engineSettings";
 
 export interface ReportInput {
   proposition: string;
@@ -30,9 +31,10 @@ const SUPPORT_LABELS: Record<SupportStatus, string> = {
 const MAX_REPORT_FILES_PER_HARNESS = 4;
 
 function engineLabel(engine: ExplorationEngine): string {
-  if (engine === "claude-code") return "本地 Claude Code 探索";
   if (engine === "claude") return "Claude 自主探索";
-  return engine === "heuristic+claude" ? "启发式 + Claude" : "启发式";
+  if (engine === "heuristic+claude") return "启发式 + Claude";
+  if (engine === "heuristic") return "启发式";
+  return `${LOCAL_ENGINE_LABELS[engine]} 探索`;
 }
 
 function escapeCell(value: string): string {
@@ -200,7 +202,7 @@ export function buildReport(
 ): string {
   const keywords =
     input.evidence.patterns.map((pattern) => `\`${pattern}\``).join("、") ||
-    (engine === "claude" || engine === "claude-code" ? "AI 自主探索" : "—");
+    (engine === "heuristic" || engine === "heuristic+claude" ? "—" : "AI 自主探索");
   const conclusion = synthesis ? synthesis.summaryMd : heuristicConclusion(input);
 
   const tableRows = input.evidence.harnesses.map((entry) => {

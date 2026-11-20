@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CLAUDE_CODE_COMMAND_MAX_LENGTH, isValidClaudeCommand } from "../explore/engineSettings";
+import { isValidLocalCommand, LOCAL_COMMAND_MAX_LENGTH } from "../explore/engineSettings";
 import { COMMIT_CATEGORIES } from "../types";
 import { isTimezone } from "../utils/time";
 
@@ -170,19 +170,25 @@ export const explorationCreateSchema = z.object({
   harnessIds: z.array(z.coerce.number().int().positive()).max(20).optional(),
 });
 
+function localCommandField(label: string) {
+  return z
+    .string()
+    .trim()
+    .max(LOCAL_COMMAND_MAX_LENGTH, `${label}命令过长`)
+    .refine(isValidLocalCommand, `${label}命令不能为空且不能包含控制字符`)
+    .optional();
+}
+
 export const settingsSchema = z
   .object({
     aiEnabled: z.boolean().optional(),
     aiModel: z.string().trim().min(1).max(120).optional(),
     aiMaxPerSync: z.coerce.number().int().min(0).max(200).optional(),
     timezone: z.string().trim().refine(isTimezone, "无效的 IANA 时区").optional(),
-    exploreEngine: z.enum(["api", "claude-code"]).optional(),
-    claudeCodeCommand: z
-      .string()
-      .trim()
-      .max(CLAUDE_CODE_COMMAND_MAX_LENGTH, "Claude Code 命令过长")
-      .refine(isValidClaudeCommand, "Claude Code 命令不能为空且不能包含控制字符")
-      .optional(),
+    exploreEngine: z.enum(["api", "claude-code", "codex", "deepseek"]).optional(),
+    claudeCodeCommand: localCommandField("Claude Code"),
+    codexCommand: localCommandField("Codex"),
+    deepseekCommand: localCommandField("DeepSeek Harness"),
   })
   .refine((value) => Object.keys(value).length > 0, "没有需要更新的字段");
 
