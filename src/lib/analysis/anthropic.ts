@@ -1,14 +1,14 @@
-import Anthropic from "@anthropic-ai/sdk";
+import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import type { Db } from "../db/client";
 import { getDb } from "../db/client";
 import { getSetting } from "../db/repositories/settings";
 import { COMMIT_CATEGORIES, type CommitCategory } from "../types";
+import { requestClaudeJson } from "./claudeJson";
 
 const DEFAULT_MODEL = "claude-sonnet-5";
 const DEFAULT_MAX_PER_SYNC = 20;
 const MAX_DIFF_CHARS = 12_000;
-const REQUEST_TIMEOUT_MS = 45_000;
 
 export interface AiConfig {
   enabled: boolean;
@@ -101,47 +101,17 @@ function buildUserPrompt(context: AiCommitContext): string {
   ].join("\n");
 }
 
-function extractJson(text: string): unknown {
-  const trimmed = text.trim();
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  const candidate = fenced ? fenced[1] : trimmed;
-  const start = candidate.indexOf("{");
-  const end = candidate.lastIndexOf("}");
-  if (start === -1 || end <= start) throw new Error("AI response contained no JSON object");
-  return JSON.parse(candidate.slice(start, end + 1));
-}
-
 export async function analyzeWithClaude(
   context: AiCommitContext,
   config: AiConfig,
   clientFactory?: (apiKey: string) => Anthropic,
 ): Promise<AiAnalysis | null> {
-  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
-  if (!config.enabled || !apiKey) return null;
-
-  try {
-    const client = clientFactory
-      ? clientFactory(apiKey)
-      : new Anthropic({ apiKey, timeout: REQUEST_TIMEOUT_MS, maxRetries: 1 });
-
-    const response = await client.messages.create({
-      model: config.model,
-      max_tokens: 1500,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: buildUserPrompt(context) }],
-    });
-
-    const text = response.content
-      .filter((block): block is Anthropic.TextBlock => block.type === "text")
-      .map((block) => block.text)
-      .join("\n");
-
-    return aiSchema.parse(extractJson(text));
-  } catch (error) {
-    console.warn(
-      "[zodiac] Claude analysis failed, falling back to heuristics:",
-      error instanceof Error ? error.message : String(error),
-    );
-    return null;
-  }
+  return requestClaudeJson({
+    config,
+    system: SYSTEM_PROMPT,
+    user: buildUserPrompt(context),
+    schema: aiSchema,
+    maxTokens: 1500,
+    clientFactory,
+  });
 }

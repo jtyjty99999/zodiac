@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { categoryLabel } from "@/lib/analysis/classify";
-import type { CommitCategory, SupportStatus } from "@/lib/types";
+import type { CommitCategory, ExplorationStatus, SupportStatus } from "@/lib/types";
 
 export function PageHeader({
   title,
@@ -97,6 +97,27 @@ export function CategoryBadge({ category }: { category: CommitCategory | null })
       className={`inline-flex rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${CATEGORY_STYLES[category]}`}
     >
       {categoryLabel(category)}
+    </span>
+  );
+}
+
+export const EXPLORATION_STATUS_LABELS: Record<ExplorationStatus, string> = {
+  running: "运行中",
+  success: "已完成",
+  failed: "失败",
+};
+
+export function ExplorationStatusBadge({ status }: { status: ExplorationStatus }) {
+  const styles: Record<ExplorationStatus, string> = {
+    running: "border-accent/35 bg-accent-soft text-accent",
+    success: "border-success/35 bg-success/10 text-success",
+    failed: "border-danger/35 bg-danger/10 text-danger",
+  };
+  return (
+    <span
+      className={`inline-flex rounded-md border px-1.5 py-0.5 text-[11px] font-medium ${styles[status]}`}
+    >
+      {EXPLORATION_STATUS_LABELS[status]}
     </span>
   );
 }

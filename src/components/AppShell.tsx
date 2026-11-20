@@ -3,6 +3,7 @@
 import {
   Boxes,
   CalendarDays,
+  Compass,
   GitCommitHorizontal,
   GitCompare,
   Grid3X3,
@@ -24,6 +25,7 @@ const NAV = [
   { href: "/", label: "概览", icon: LayoutDashboard },
   { href: "/features", label: "功能矩阵", icon: Grid3X3 },
   { href: "/compare", label: "实现对比", icon: GitCompare },
+  { href: "/explore", label: "功能探索", icon: Compass },
   { href: "/daily", label: "日更归档", icon: CalendarDays },
   { href: "/commits", label: "提交与发版", icon: GitCommitHorizontal },
   { href: "/candidates", label: "新功能候选", icon: Inbox },

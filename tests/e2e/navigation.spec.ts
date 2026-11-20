@@ -3,6 +3,7 @@ import { expect, test } from "@playwright/test";
 const SECTIONS = [
   { label: "功能矩阵", path: "/features" },
   { label: "实现对比", path: "/compare" },
+  { label: "功能探索", path: "/explore" },
   { label: "Harness 管理", path: "/harnesses" },
   { label: "基线版本", path: "/baseline" },
   { label: "设置", path: "/settings" },

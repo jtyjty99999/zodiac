@@ -15,14 +15,15 @@
 - **按天归档**：每个 harness 每天聚合提交、分类统计、发版记录与重点点评。
 - **基线演进**：人工编辑支持状态或确认新功能候选后，自动生成带日期的基线版本与功能历史，可导出 JSON / Markdown。
 - **新功能候选**：从 feature 类提交中提炼候选，自动对其它 harness 做目录相似度与提交历史交叉检查，人工接受或驳回。
+- **功能探索**：输入一个命题，系统把命题转成检索词，在所选 harness 的本地镜像中离线检索代码证据，生成跨 harness 的对比报告并保存；配置 AI 后由 Claude 基于证据综合，失败自动回退启发式。
 
 ## 界面预览
 
-| 功能矩阵 | 实现细节对比 |
-| --- | --- |
+| 功能矩阵                                      | 实现细节对比                                                    |
+| --------------------------------------------- | --------------------------------------------------------------- |
 | ![功能矩阵](docs/screenshots/02-features.png) | ![实现细节对比](docs/screenshots/04-compare-tool-call-loop.png) |
-| **日更归档** | **新功能候选** |
-| ![日更归档](docs/screenshots/05-daily.png) | ![新功能候选](docs/screenshots/09-candidates.png) |
+| **日更归档**                                  | **新功能候选**                                                  |
+| ![日更归档](docs/screenshots/05-daily.png)    | ![新功能候选](docs/screenshots/09-candidates.png)               |
 
 更多截图与逐页操作说明见 [docs/usage.md](docs/usage.md)。
 
@@ -45,7 +46,7 @@ pnpm sync --all             # 抓取全部启用的 harness
 pnpm sync --harness codex   # 只同步 codex
 ```
 
-同步会在 `data/` 下创建 bare mirror（`--filter=blob:none` 部分克隆）与按需落盘的 diff。首次全量抓取耗时取决于仓库大小与回填天数。
+同步会在 `data/` 下创建 bare mirror（浅克隆，仅跟踪配置的分支）与按需落盘的 diff。首次全量抓取耗时取决于仓库大小与回填天数。
 
 ## 环境变量
 
@@ -64,12 +65,13 @@ pnpm sync --harness codex   # 只同步 codex
 ## 目录结构
 
 ```
-src/app/                # 页面与 API 路由（概览、矩阵、对比、日报、提交、候选、Harness、基线、设置）
-src/components/         # AppShell、矩阵、对比、Markdown、Diff、同步按钮等组件
-src/lib/db/             # schema/migrations + repositories（harness、commit、catalog、candidate…）
-src/lib/git/            # bare mirror、git log/numstat/patch 解析、Releases、diff 落盘
+src/app/                # 页面与 API 路由（概览、矩阵、对比、探索、日报、提交、候选、Harness、基线、设置）
+src/components/         # AppShell、矩阵、对比、Markdown、Diff、同步按钮、探索表单等组件
+src/lib/db/             # schema/migrations + repositories（harness、commit、catalog、candidate、exploration…）
+src/lib/git/            # bare mirror、git log/numstat/patch 解析、本地 grep 检索、Releases、diff 落盘
 src/lib/ingest/         # 一次同步的完整流程：抓取 → 入库 → 分析 → 日报 → 候选交叉检查
 src/lib/analysis/       # 分类、评级、启发式摘要、功能识别、可选 Claude 增强
+src/lib/explore/        # 功能探索：关键词提取、证据检索、报告组装、可选 Claude 综合
 src/lib/catalog/        # 矩阵、对比视图、基线版本、候选并入、Markdown 导出
 src/lib/scheduler/      # 60s tick 的到期判断与防重入调度
 src/lib/http/           # 统一响应封装、同源校验、限流
@@ -110,7 +112,7 @@ pnpm reanalyze --harness codex      # 只重算某个 harness
 ```bash
 pnpm lint        # Biome（格式 + 规则）
 pnpm typecheck
-pnpm test        # Vitest，213 个用例，src/lib 覆盖率门槛 80%
+pnpm test        # Vitest，266 个用例，src/lib 覆盖率门槛 80%
 pnpm e2e         # Playwright，首次运行前执行 pnpm exec playwright install chromium
 ```
 

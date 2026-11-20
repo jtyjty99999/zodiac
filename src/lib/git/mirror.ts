@@ -17,10 +17,15 @@ export interface GitResult {
   stderr: string;
 }
 
-export function runGit(
-  args: string[],
-  options: { cwd?: string; timeoutMs?: number; env?: Record<string, string> } = {},
-): Promise<GitResult> {
+export interface GitRunOptions {
+  cwd?: string;
+  timeoutMs?: number;
+  env?: Record<string, string>;
+  /** Exit codes that are a normal result rather than a failure (e.g. grep's 1 = no match). */
+  allowExitCodes?: number[];
+}
+
+export function runGit(args: string[], options: GitRunOptions = {}): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     execFile(
       "git",
@@ -39,6 +44,14 @@ export function runGit(
       },
       (error, stdout, stderr) => {
         if (error) {
+          const exitCode =
+            typeof (error as { code?: unknown }).code === "number"
+              ? (error as { code: number }).code
+              : null;
+          if (exitCode !== null && options.allowExitCodes?.includes(exitCode)) {
+            resolve({ stdout: stdout.toString(), stderr: stderr.toString() });
+            return;
+          }
           const detail = stderr?.trim() || error.message;
           reject(new Error(`git ${args.slice(0, 3).join(" ")} failed: ${detail.slice(0, 2000)}`));
           return;

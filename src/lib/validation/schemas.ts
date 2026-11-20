@@ -160,6 +160,11 @@ export const commitAnalyzeSchema = z.object({
   force: z.boolean().optional(),
 });
 
+export const explorationCreateSchema = z.object({
+  proposition: z.string().trim().min(5, "命题至少 5 个字符").max(600, "命题最多 600 个字符"),
+  harnessIds: z.array(z.coerce.number().int().positive()).max(20).optional(),
+});
+
 export const settingsSchema = z
   .object({
     aiEnabled: z.boolean().optional(),

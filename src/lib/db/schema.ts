@@ -239,4 +239,29 @@ UPDATE harnesses SET last_sync_at = (
 UPDATE sync_runs SET heartbeat_at = COALESCE(finished_at, started_at);
 `,
   },
+  {
+    version: 3,
+    name: "explorations",
+    // A feature exploration: a user proposition searched against the local
+    // mirrors of the selected harnesses, with a persisted comparison report.
+    sql: `
+CREATE TABLE IF NOT EXISTS explorations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  proposition TEXT NOT NULL,
+  harness_ids TEXT NOT NULL DEFAULT '[]',
+  keywords TEXT NOT NULL DEFAULT '[]',
+  matched_features TEXT NOT NULL DEFAULT '[]',
+  status TEXT NOT NULL DEFAULT 'running',
+  phase TEXT NOT NULL DEFAULT 'search',
+  engine TEXT NOT NULL DEFAULT 'heuristic',
+  report_md TEXT,
+  evidence_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  finished_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_explorations_created ON explorations(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_explorations_status ON explorations(status, created_at);
+`,
+  },
 ];

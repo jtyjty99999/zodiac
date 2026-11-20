@@ -226,3 +226,70 @@ export interface HarnessStats {
   lastCommitDay: string | null;
   openCandidates: number;
 }
+
+export type ExplorationStatus = "running" | "success" | "failed";
+export type ExplorationPhase = "search" | "synthesize" | "done";
+export type ExplorationEngine = "heuristic" | "heuristic+claude";
+export type ExplorationHarnessStatus = "ok" | "empty" | "missing" | "error";
+
+export interface ExplorationMatchedFeature {
+  id: number;
+  key: string;
+  name: string;
+}
+
+export interface ExplorationSnippet {
+  line: number;
+  text: string;
+}
+
+export interface ExplorationFileEvidence {
+  path: string;
+  /** Number of matching lines in the whole file. */
+  total: number;
+  snippets: ExplorationSnippet[];
+}
+
+export interface ExplorationHarnessEvidence {
+  harnessId: number;
+  slug: string;
+  name: string;
+  status: ExplorationHarnessStatus;
+  rev: string | null;
+  totalFiles: number;
+  totalMatches: number;
+  files: ExplorationFileEvidence[];
+  note: string | null;
+  /** True when grep output or file selection hit a limit. */
+  truncated: boolean;
+}
+
+export interface ExplorationEvidence {
+  generatedAt: string;
+  patterns: string[];
+  harnesses: ExplorationHarnessEvidence[];
+  /** Matched catalog features with per-harness support status keyed by slug. */
+  relatedFeatures: Array<{
+    featureId: number;
+    key: string;
+    name: string;
+    support: Record<string, SupportStatus>;
+  }>;
+  truncated: boolean;
+}
+
+export interface Exploration {
+  id: number;
+  proposition: string;
+  harnessIds: number[];
+  keywords: string[];
+  matchedFeatures: ExplorationMatchedFeature[];
+  status: ExplorationStatus;
+  phase: ExplorationPhase;
+  engine: ExplorationEngine;
+  reportMd: string | null;
+  evidence: ExplorationEvidence | null;
+  error: string | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
